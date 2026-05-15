@@ -56,6 +56,106 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HTTPValidationError"
+  /sessions/{session_id}/submissions:
+    get:
+      tags:
+        - submissions
+      summary: Get Session Submissions
+      description: Return all assignment submissions associated with a session.
+      operationId: get_session_submissions_sessions__session_id__submissions_get
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            title: Session Id
+        - name: X-Trace-Id
+          in: header
+          required: false
+          schema:
+            anyOf:
+              - type: string
+              - type: "null"
+            title: X-Trace-Id
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SessionSubmission"
+                title: Response Get Session Submissions Sessions  Session Id  Submissions Get
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiErrorResponse"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiErrorResponse"
+        "422":
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HTTPValidationError"
+  /students/{student_id}/submissions:
+    get:
+      tags:
+        - submissions
+      summary: Get Student Submissions
+      description: Return all assignment submissions associated with a student.
+      operationId: get_student_submissions_students__student_id__submissions_get
+      parameters:
+        - name: student_id
+          in: path
+          required: true
+          schema:
+            type: string
+            title: Student Id
+        - name: X-Trace-Id
+          in: header
+          required: false
+          schema:
+            anyOf:
+              - type: string
+              - type: "null"
+            title: X-Trace-Id
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StudentSubmission"
+                title: Response Get Student Submissions Students  Student Id  Submissions Get
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiErrorResponse"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiErrorResponse"
+        "422":
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HTTPValidationError"
 components:
   schemas:
     ApiError:
@@ -104,6 +204,213 @@ components:
         - session_topic
       title: SessionSummary
       description: Public response model for a session summary.
+    SessionSubmission:
+      properties:
+        submission_id:
+          type: string
+          title: Submission Id
+          description: Unique identifier for the submission.
+        assignment_requirement_id:
+          type: string
+          title: Assignment Requirement Id
+          description: Unique identifier for the related assignment requirement.
+        assignment_title:
+          type: string
+          title: Assignment Title
+          description: Assignment title shown to reviewers.
+        due_at:
+          anyOf:
+            - type: string
+            - type: "null"
+          title: Due At
+          description: Assignment due date stored for the related requirement.
+        student_id:
+          type: string
+          title: Student Id
+          description: Unique identifier for the student.
+        student_code:
+          type: string
+          title: Student Code
+          description: Stable student code used by the course.
+        student_full_name:
+          type: string
+          title: Student Full Name
+          description: Full name of the submitting student.
+        source_type:
+          type: string
+          enum:
+            - github_pr
+            - local_folder
+            - zip_upload
+          title: Source Type
+          description: Submission source type.
+        repo_url:
+          anyOf:
+            - type: string
+            - type: "null"
+          title: Repo Url
+          description: Repository URL when the source type is github_pr.
+        local_path:
+          anyOf:
+            - type: string
+            - type: "null"
+          title: Local Path
+          description: Local folder path when the source type is local_folder.
+        zip_path:
+          anyOf:
+            - type: string
+            - type: "null"
+          title: Zip Path
+          description: Uploaded zip path when the source type is zip_upload.
+        youtube_demo_url:
+          anyOf:
+            - type: string
+            - type: "null"
+          title: Youtube Demo Url
+          description: Optional demo recording URL provided by the student.
+        linkedin_url:
+          anyOf:
+            - type: string
+            - type: "null"
+          title: Linkedin Url
+          description: Optional LinkedIn URL provided by the student.
+        status:
+          type: string
+          enum:
+            - submitted
+            - under_review
+            - reviewed
+            - needs_resubmission
+          title: Status
+          description: Current review status for the submission.
+        submitted_at:
+          type: string
+          title: Submitted At
+          description: Submission timestamp stored in SQLite.
+      type: object
+      required:
+        - submission_id
+        - assignment_requirement_id
+        - assignment_title
+        - student_id
+        - student_code
+        - student_full_name
+        - source_type
+        - status
+        - submitted_at
+      title: SessionSubmission
+      description: Public response model for an assignment submission in a session.
+    StudentSubmission:
+      properties:
+        submission_id:
+          type: string
+          title: Submission Id
+          description: Unique identifier for the submission.
+        session_id:
+          type: string
+          title: Session Id
+          description: Unique identifier for the related session.
+        session_title:
+          type: string
+          title: Session Title
+          description: Stored title for the related session.
+        session_topic:
+          type: string
+          title: Session Topic
+          description: Stored topic summary for the related session.
+        assignment_requirement_id:
+          type: string
+          title: Assignment Requirement Id
+          description: Unique identifier for the related assignment requirement.
+        assignment_title:
+          type: string
+          title: Assignment Title
+          description: Assignment title shown to reviewers.
+        due_at:
+          anyOf:
+            - type: string
+            - type: "null"
+          title: Due At
+          description: Assignment due date stored for the related requirement.
+        student_id:
+          type: string
+          title: Student Id
+          description: Unique identifier for the student.
+        student_code:
+          type: string
+          title: Student Code
+          description: Stable student code used by the course.
+        student_full_name:
+          type: string
+          title: Student Full Name
+          description: Full name of the submitting student.
+        source_type:
+          type: string
+          enum:
+            - github_pr
+            - local_folder
+            - zip_upload
+          title: Source Type
+          description: Submission source type.
+        repo_url:
+          anyOf:
+            - type: string
+            - type: "null"
+          title: Repo Url
+          description: Repository URL when the source type is github_pr.
+        local_path:
+          anyOf:
+            - type: string
+            - type: "null"
+          title: Local Path
+          description: Local folder path when the source type is local_folder.
+        zip_path:
+          anyOf:
+            - type: string
+            - type: "null"
+          title: Zip Path
+          description: Uploaded zip path when the source type is zip_upload.
+        youtube_demo_url:
+          anyOf:
+            - type: string
+            - type: "null"
+          title: Youtube Demo Url
+          description: Optional demo recording URL provided by the student.
+        linkedin_url:
+          anyOf:
+            - type: string
+            - type: "null"
+          title: Linkedin Url
+          description: Optional LinkedIn URL provided by the student.
+        status:
+          type: string
+          enum:
+            - submitted
+            - under_review
+            - reviewed
+            - needs_resubmission
+          title: Status
+          description: Current review status for the submission.
+        submitted_at:
+          type: string
+          title: Submitted At
+          description: Submission timestamp stored in SQLite.
+      type: object
+      required:
+        - submission_id
+        - session_id
+        - session_title
+        - session_topic
+        - assignment_requirement_id
+        - assignment_title
+        - student_id
+        - student_code
+        - student_full_name
+        - source_type
+        - status
+        - submitted_at
+      title: StudentSubmission
+      description: Public response model for an assignment submission for a single student.
     HTTPValidationError:
       properties:
         detail:
