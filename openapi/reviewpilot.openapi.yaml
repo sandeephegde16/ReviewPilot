@@ -1,0 +1,141 @@
+openapi: 3.1.0
+info:
+  title: ReviewPilot
+  version: 0.1.0
+paths:
+  /health:
+    get:
+      summary: Health
+      description: Return a simple health response for the API.
+      operationId: health_health_get
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                title: Response Health Health Get
+                additionalProperties:
+                  type: string
+  /allsessions:
+    get:
+      tags:
+        - sessions
+      summary: Get All Sessions
+      description: Return all stored session titles and topics.
+      operationId: get_all_sessions_allsessions_get
+      parameters:
+        - name: X-Trace-Id
+          in: header
+          required: false
+          schema:
+            anyOf:
+              - type: string
+              - type: "null"
+            title: X-Trace-Id
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                title: Response Get All Sessions Allsessions Get
+                items:
+                  $ref: "#/components/schemas/SessionSummary"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiErrorResponse"
+        "422":
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HTTPValidationError"
+components:
+  schemas:
+    ApiError:
+      properties:
+        code:
+          type: string
+          title: Code
+          description: Stable error code for the failure type.
+        message:
+          type: string
+          title: Message
+          description: Human-readable error message.
+        trace_id:
+          type: string
+          title: Trace Id
+          description: Trace identifier for correlating logs.
+      type: object
+      required:
+        - code
+        - message
+        - trace_id
+      title: ApiError
+      description: Machine-readable error details for API failures.
+    ApiErrorResponse:
+      properties:
+        error:
+          $ref: "#/components/schemas/ApiError"
+      type: object
+      required:
+        - error
+      title: ApiErrorResponse
+      description: Top-level error response payload.
+    SessionSummary:
+      properties:
+        session_title:
+          type: string
+          title: Session Title
+          description: Stored title for the session.
+        session_topic:
+          type: string
+          title: Session Topic
+          description: Stored topic summary for the session.
+      type: object
+      required:
+        - session_title
+        - session_topic
+      title: SessionSummary
+      description: Public response model for a session summary.
+    HTTPValidationError:
+      properties:
+        detail:
+          type: array
+          title: Detail
+          items:
+            $ref: "#/components/schemas/ValidationError"
+      type: object
+      title: HTTPValidationError
+    ValidationError:
+      properties:
+        loc:
+          type: array
+          title: Location
+          items:
+            anyOf:
+              - type: string
+              - type: integer
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+        - loc
+        - msg
+        - type
+      title: ValidationError
