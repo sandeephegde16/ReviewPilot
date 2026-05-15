@@ -1,0 +1,35 @@
+.DS_Store
+
+# IDE
+.idea/
+
+# Python virtual environments
+.venv/
+venv/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Coverage output
+.coverage
+.coverage.*
+htmlcov/
+
+# Local environment files
+.env
+.env.local
+
+# Local SQLite databases
+db/*.db
+*.sqlite
+*.sqlite3
+
+# Runtime logs
+*.log
