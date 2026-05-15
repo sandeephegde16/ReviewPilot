@@ -4,7 +4,7 @@ ReviewPilot is an early bootstrap for an assignment review agent. The current re
 
 ## What is here now
 
-- `app/main.py`: FastAPI app with `GET /health` and `GET /allsessions`
+- `app/main.py`: FastAPI app with `GET /health`, `GET /allsessions`, `GET /sessions/{session_id}/submissions`, and `GET /students/{student_id}/submissions`
 - `db/schema.sql`: SQLite schema for students, session content, assignment requirements, and submissions
 - `openapi/reviewpilot.openapi.yaml`: OpenAPI contract for the current HTTP endpoints
 - `DESIGN_SPEC.md`: target architecture and planned review flow
@@ -29,6 +29,8 @@ The app starts on `http://127.0.0.1:8000`. Available endpoints:
 
 - `GET /health`
 - `GET /allsessions`
+- `GET /sessions/{session_id}/submissions`
+- `GET /students/{student_id}/submissions`
 
 Session API telemetry is emitted as one JSON log line per event to server stdout.
 
