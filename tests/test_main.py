@@ -9,7 +9,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-import app.concept_orchestrator as concept_orchestrator
+import app.assignment_requirement_extraction_spec as assignment_requirement_extraction_spec
+import app.assignment_requirement_provider as assignment_requirement_provider
+import app.concept_extraction_spec as concept_extraction_spec
 import app.concept_provider as concept_provider
 import app.provider_router as provider_router
 from app.logging_config import configure_logging
@@ -243,8 +245,8 @@ def _build_test_database(database_path: Path) -> None:
         connection.close()
 
 
-class _RecordingConceptProvider:
-    """Test double for the concept extraction provider interface."""
+class _RecordingStructuredExtractionProvider:
+    """Test double for the shared structured extraction provider interface."""
 
     provider_name = "test-provider"
     model_name = "test-model"
@@ -254,7 +256,7 @@ class _RecordingConceptProvider:
         self._responses = responses
         self.requests: list[tuple[object, str, object | None]] = []
 
-    def extract_concepts(
+    def extract_structured_output(
         self,
         request,
         *,
@@ -264,6 +266,20 @@ class _RecordingConceptProvider:
         """Return the next canned response while recording the canonical request."""
         self.requests.append((request, trace_id, repair_context))
         return self._responses.pop(0)
+
+    def extract_concepts(
+        self,
+        request,
+        *,
+        trace_id: str,
+        repair_context=None,
+    ) -> dict[str, object]:
+        """Compatibility wrapper for concept-specific callers in older tests."""
+        return self.extract_structured_output(
+            request,
+            trace_id=trace_id,
+            repair_context=repair_context,
+        )
 
 
 class _RaisingConceptProvider:
@@ -275,7 +291,7 @@ class _RaisingConceptProvider:
         self.model_name = model_name
         self.message = message
 
-    def extract_concepts(
+    def extract_structured_output(
         self,
         request,
         *,
@@ -285,6 +301,20 @@ class _RaisingConceptProvider:
         """Raise a runtime error to simulate a provider-call failure."""
         del request, trace_id, repair_context
         raise RuntimeError(self.message)
+
+    def extract_concepts(
+        self,
+        request,
+        *,
+        trace_id: str,
+        repair_context=None,
+    ) -> dict[str, object]:
+        """Compatibility wrapper for concept-specific callers in older tests."""
+        return self.extract_structured_output(
+            request,
+            trace_id=trace_id,
+            repair_context=repair_context,
+        )
 
 
 def test_get_all_sessions_returns_session_titles_and_topics(
@@ -372,7 +402,7 @@ def test_extract_session_concepts_returns_concepts_from_transcript(
     """POST /sessions/{session_id}/extract-concepts should return validated concepts."""
     database_path = tmp_path / "reviewpilot.db"
     _build_test_database(database_path)
-    provider = _RecordingConceptProvider(
+    provider = _RecordingStructuredExtractionProvider(
         [
             {
                 "concepts": [
@@ -381,9 +411,7 @@ def test_extract_session_concepts_returns_concepts_from_transcript(
                         "summary": "Explains how MCP tools are exposed to the runtime.",
                         "grading_reason": "Students should be able to wire tools correctly.",
                         "concept_importance": 9,
-                        "evidence": [
-                            "MCP tool registration connects tools to the runtime."
-                        ],
+                        "evidence": ["MCP tool registration connects tools to the runtime."],
                     },
                     {
                         "name": "Schema validation",
@@ -401,7 +429,7 @@ def test_extract_session_concepts_returns_concepts_from_transcript(
     monkeypatch.setattr(
         concept_provider,
         "select_concept_extraction_provider",
-        lambda *, reasoning_level: provider,
+        lambda: provider,
     )
     monkeypatch.setattr(
         provider_router,
@@ -426,18 +454,14 @@ def test_extract_session_concepts_returns_concepts_from_transcript(
                 "summary": "Explains how MCP tools are exposed to the runtime.",
                 "grading_reason": "Students should be able to wire tools correctly.",
                 "concept_importance": 9,
-                "evidence": [
-                    "MCP tool registration connects tools to the runtime."
-                ],
+                "evidence": ["MCP tool registration connects tools to the runtime."],
             },
             {
                 "name": "Schema validation",
                 "summary": "Covers validating tool inputs and outputs.",
                 "grading_reason": "Students should produce reliable structured outputs.",
                 "concept_importance": 8,
-                "evidence": [
-                    "Transport setup and schema validation keep integrations reliable."
-                ],
+                "evidence": ["Transport setup and schema validation keep integrations reliable."],
             },
         ],
         "warnings": [],
@@ -445,19 +469,24 @@ def test_extract_session_concepts_returns_concepts_from_transcript(
     provider_request, recorded_trace_id, repair_context = provider.requests[0]
     assert recorded_trace_id == "trace-extract-success"
     assert repair_context is None
-    assert provider_request.operation_name == concept_orchestrator.DEFAULT_OPERATION_NAME
+    assert provider_request.operation_name == concept_extraction_spec.DEFAULT_OPERATION_NAME
     assert provider_request.session_id == "session-newer"
     assert provider_request.output_mode == "json_schema_strict"
     assert provider_request.reasoning_level == "high"
     assert provider_request.reasoning_type == "structured_extraction"
+    assert provider_request.max_concepts == 5
     assert provider_request.response_schema["title"] == "ConceptExtractionOutput"
     assert provider_request.response_schema["type"] == "object"
     assert provider_request.response_schema["required"] == ["concepts"]
     assert "concepts" in provider_request.response_schema["properties"]
-    assert (
-        provider_request.response_schema["properties"]["concepts"]["items"]["required"]
-        == ["name", "summary", "grading_reason", "concept_importance", "evidence"]
-    )
+    assert provider_request.response_schema["properties"]["concepts"]["maxItems"] == 5
+    assert provider_request.response_schema["properties"]["concepts"]["items"]["required"] == [
+        "name",
+        "summary",
+        "grading_reason",
+        "concept_importance",
+        "evidence",
+    ]
     assert "MCP tool registration connects tools to the runtime." in (
         provider_request.session_transcript or ""
     )
@@ -470,7 +499,7 @@ def test_extract_session_concepts_accepts_plain_text_transcript(
     """POST /sessions/{session_id}/extract-concepts should use raw text transcripts."""
     database_path = tmp_path / "reviewpilot.db"
     _build_test_database(database_path)
-    provider = _RecordingConceptProvider(
+    provider = _RecordingStructuredExtractionProvider(
         [
             {
                 "concepts": [
@@ -493,7 +522,7 @@ def test_extract_session_concepts_accepts_plain_text_transcript(
     monkeypatch.setattr(
         concept_provider,
         "select_concept_extraction_provider",
-        lambda *, reasoning_level: provider,
+        lambda: provider,
     )
     monkeypatch.setattr(
         provider_router,
@@ -518,10 +547,7 @@ def test_extract_session_concepts_accepts_plain_text_transcript(
                 "grading_reason": "Students should understand orchestrated workflows.",
                 "concept_importance": 8,
                 "evidence": [
-                    (
-                        "Agents coordinate tools, prompts, and control flow for "
-                        "repeatable workflows."
-                    )
+                    ("Agents coordinate tools, prompts, and control flow for repeatable workflows.")
                 ],
             }
         ],
@@ -529,9 +555,8 @@ def test_extract_session_concepts_accepts_plain_text_transcript(
     }
     provider_request, _, repair_context = provider.requests[0]
     assert repair_context is None
-    assert (
-        "Agents coordinate tools, prompts, and control flow for repeatable workflows."
-        in (provider_request.session_transcript or "")
+    assert "Agents coordinate tools, prompts, and control flow for repeatable workflows." in (
+        provider_request.session_transcript or ""
     )
 
 
@@ -590,7 +615,7 @@ def test_extract_session_concepts_cleans_timestamp_artifacts_before_provider_cal
         connection.commit()
     finally:
         connection.close()
-    provider = _RecordingConceptProvider(
+    provider = _RecordingStructuredExtractionProvider(
         [
             {
                 "concepts": [
@@ -613,7 +638,7 @@ def test_extract_session_concepts_cleans_timestamp_artifacts_before_provider_cal
     monkeypatch.setattr(
         concept_provider,
         "select_concept_extraction_provider",
-        lambda *, reasoning_level: provider,
+        lambda: provider,
     )
     monkeypatch.setattr(
         provider_router,
@@ -645,7 +670,7 @@ def test_extract_session_concepts_returns_warning_when_transcript_is_missing(
     """POST /sessions/{session_id}/extract-concepts should fall back to the session topic."""
     database_path = tmp_path / "reviewpilot.db"
     _build_test_database(database_path)
-    provider = _RecordingConceptProvider(
+    provider = _RecordingStructuredExtractionProvider(
         [
             {
                 "concepts": [
@@ -663,7 +688,7 @@ def test_extract_session_concepts_returns_warning_when_transcript_is_missing(
     monkeypatch.setattr(
         concept_provider,
         "select_concept_extraction_provider",
-        lambda *, reasoning_level: provider,
+        lambda: provider,
     )
     monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
     client = TestClient(app)
@@ -709,7 +734,7 @@ def test_extract_session_concepts_repairs_schema_failure_once(
     """POST /sessions/{session_id}/extract-concepts should retry once on schema failure."""
     database_path = tmp_path / "reviewpilot.db"
     _build_test_database(database_path)
-    provider = _RecordingConceptProvider(
+    provider = _RecordingStructuredExtractionProvider(
         [
             {"concepts": [{"name": "Schema validation"}]},
             {
@@ -730,7 +755,7 @@ def test_extract_session_concepts_repairs_schema_failure_once(
     monkeypatch.setattr(
         concept_provider,
         "select_concept_extraction_provider",
-        lambda *, reasoning_level: provider,
+        lambda: provider,
     )
     monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
     client = TestClient(app)
@@ -759,7 +784,7 @@ def test_extract_session_concepts_returns_structured_error_after_failed_repair(
     """POST /sessions/{session_id}/extract-concepts should fail after repair is exhausted."""
     database_path = tmp_path / "reviewpilot.db"
     _build_test_database(database_path)
-    provider = _RecordingConceptProvider(
+    provider = _RecordingStructuredExtractionProvider(
         [
             {"concepts": [{"name": "Schema validation"}]},
             {"concepts": [{"name": "Still invalid"}]},
@@ -768,7 +793,7 @@ def test_extract_session_concepts_returns_structured_error_after_failed_repair(
     monkeypatch.setattr(
         concept_provider,
         "select_concept_extraction_provider",
-        lambda *, reasoning_level: provider,
+        lambda: provider,
     )
     monkeypatch.setattr(
         provider_router,
@@ -800,13 +825,13 @@ def test_extract_session_concepts_does_not_fall_back_after_failed_schema_repair(
     """Schema-invalid provider output should fail fast instead of hopping providers."""
     database_path = tmp_path / "reviewpilot.db"
     _build_test_database(database_path)
-    primary_provider = _RecordingConceptProvider(
+    primary_provider = _RecordingStructuredExtractionProvider(
         [
             {"concepts": [{"name": "Schema validation"}]},
             {"concepts": [{"name": "Still invalid"}]},
         ]
     )
-    fallback_provider = _RecordingConceptProvider(
+    fallback_provider = _RecordingStructuredExtractionProvider(
         [
             {
                 "concepts": [
@@ -832,7 +857,7 @@ def test_extract_session_concepts_does_not_fall_back_after_failed_schema_repair(
     monkeypatch.setattr(
         concept_provider,
         "select_concept_extraction_provider",
-        lambda *, reasoning_level: primary_provider,
+        lambda: primary_provider,
     )
 
     def _build_fallback_provider(*, provider_name: str, model_name: str):
@@ -922,7 +947,7 @@ def test_extract_session_concepts_emits_structured_telemetry(
     """POST /sessions/{session_id}/extract-concepts should emit workflow telemetry."""
     database_path = tmp_path / "reviewpilot.db"
     _build_test_database(database_path)
-    provider = _RecordingConceptProvider(
+    provider = _RecordingStructuredExtractionProvider(
         [
             {
                 "concepts": [
@@ -940,7 +965,7 @@ def test_extract_session_concepts_emits_structured_telemetry(
     monkeypatch.setattr(
         concept_provider,
         "select_concept_extraction_provider",
-        lambda *, reasoning_level: provider,
+        lambda: provider,
     )
     monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
     configure_logging(force=True)
@@ -977,12 +1002,11 @@ def test_extract_session_concepts_emits_structured_telemetry(
     ]
     assert all(event["session_id"] == "session-empty" for event in extract_events)
     assert all(
-        event["tool_name"] == concept_orchestrator.DEFAULT_TOOL_NAME
-        for event in extract_events
+        event["tool_name"] == concept_extraction_spec.DEFAULT_TOOL_NAME for event in extract_events
     )
     assert all(event["reasoning_level"] == "medium" for event in extract_events)
     assert all(
-        event["reasoning_type"] == concept_orchestrator.DEFAULT_REASONING_TYPE
+        event["reasoning_type"] == concept_extraction_spec.DEFAULT_REASONING_TYPE
         for event in extract_events
     )
     canonical_request_event = telemetry_events[5]
@@ -990,10 +1014,11 @@ def test_extract_session_concepts_emits_structured_telemetry(
     assert canonical_request_event["model_name"] is None
     assert canonical_request_event["details"] == {
         "session_id": "session-empty",
-        "operation_name": concept_orchestrator.DEFAULT_OPERATION_NAME,
+        "operation_name": concept_extraction_spec.DEFAULT_OPERATION_NAME,
         "reasoning_level": "medium",
         "reasoning_type": concept_provider.DEFAULT_REASONING_TYPE,
         "output_mode": concept_provider.DEFAULT_OUTPUT_MODE,
+        "max_concepts": 5,
         "response_schema_title": "ConceptExtractionOutput",
         "has_session_transcript": False,
         "session_transcript_length": 0,
@@ -1020,7 +1045,7 @@ def test_extract_session_concepts_emits_repair_telemetry(
     """Repair workflows should emit schema failure, repair, and repair success events."""
     database_path = tmp_path / "reviewpilot.db"
     _build_test_database(database_path)
-    provider = _RecordingConceptProvider(
+    provider = _RecordingStructuredExtractionProvider(
         [
             {"concepts": [{"name": "Schema validation"}]},
             {
@@ -1041,7 +1066,7 @@ def test_extract_session_concepts_emits_repair_telemetry(
     monkeypatch.setattr(
         concept_provider,
         "select_concept_extraction_provider",
-        lambda *, reasoning_level: provider,
+        lambda: provider,
     )
     monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
     configure_logging(force=True)
@@ -1093,7 +1118,7 @@ def test_extract_session_concepts_falls_back_when_primary_provider_is_invalid(
     """Extraction should skip an invalid primary provider and route to a different provider."""
     database_path = tmp_path / "reviewpilot.db"
     _build_test_database(database_path)
-    fallback_provider = _RecordingConceptProvider(
+    fallback_provider = _RecordingStructuredExtractionProvider(
         [
             {
                 "concepts": [
@@ -1102,9 +1127,7 @@ def test_extract_session_concepts_falls_back_when_primary_provider_is_invalid(
                         "summary": "Explains how MCP tools are exposed to the runtime.",
                         "grading_reason": "Students should wire tool registration correctly.",
                         "concept_importance": 9,
-                        "evidence": [
-                            "MCP tool registration connects tools to the runtime."
-                        ],
+                        "evidence": ["MCP tool registration connects tools to the runtime."],
                     }
                 ]
             }
@@ -1121,7 +1144,7 @@ def test_extract_session_concepts_falls_back_when_primary_provider_is_invalid(
     monkeypatch.setattr(
         concept_provider,
         "select_concept_extraction_provider",
-        lambda *, reasoning_level: (_ for _ in ()).throw(
+        lambda: (_ for _ in ()).throw(
             LookupError("Anthropic provider is selected but no API key is configured.")
         ),
     )
@@ -1156,7 +1179,7 @@ def test_extract_session_concepts_falls_back_after_primary_provider_call_failure
     """Extraction should route to a different provider when the primary call fails."""
     database_path = tmp_path / "reviewpilot.db"
     _build_test_database(database_path)
-    fallback_provider = _RecordingConceptProvider(
+    fallback_provider = _RecordingStructuredExtractionProvider(
         [
             {
                 "concepts": [
@@ -1184,7 +1207,7 @@ def test_extract_session_concepts_falls_back_after_primary_provider_call_failure
     monkeypatch.setattr(
         concept_provider,
         "select_concept_extraction_provider",
-        lambda *, reasoning_level: _RaisingConceptProvider(
+        lambda: _RaisingConceptProvider(
             provider_name="anthropic",
             model_name="claude-sonnet-4-6",
             message="anthropic upstream failure",
@@ -1221,7 +1244,7 @@ def test_extract_session_concepts_falls_back_to_different_model_same_provider(
     """Extraction should try a second model for the same provider before giving up."""
     database_path = tmp_path / "reviewpilot.db"
     _build_test_database(database_path)
-    fallback_provider = _RecordingConceptProvider(
+    fallback_provider = _RecordingStructuredExtractionProvider(
         [
             {
                 "concepts": [
@@ -1249,7 +1272,7 @@ def test_extract_session_concepts_falls_back_to_different_model_same_provider(
     monkeypatch.setattr(
         concept_provider,
         "select_concept_extraction_provider",
-        lambda *, reasoning_level: _RaisingConceptProvider(
+        lambda: _RaisingConceptProvider(
             provider_name="anthropic",
             model_name="claude-sonnet-4-6",
             message="anthropic primary model failure",
@@ -1277,6 +1300,367 @@ def test_extract_session_concepts_falls_back_to_different_model_same_provider(
     assert response.status_code == 200
     assert response.json()["concepts"][0]["name"] == "MCP transports"
     assert len(fallback_provider.requests) == 1
+
+
+def test_extract_session_assignment_requirements_returns_extracted_requirements(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """POST /sessions/{session_id}/extract-assignment-requirements should return results."""
+    database_path = tmp_path / "reviewpilot.db"
+    _build_test_database(database_path)
+    provider = _RecordingStructuredExtractionProvider(
+        [
+            {
+                "assignment_requirements": [
+                    {
+                        "assignment_requirement_id": "assignment-mcp",
+                        "assignment_title": "MCP Integration Project",
+                        "requirements": [
+                            {
+                                "requirement_type": "mandatory_deliverable",
+                                "title": "MCP-backed workflow",
+                                "summary": "Students must build the MCP-based workflow.",
+                                "evidence": ["Wire an MCP-backed workflow."],
+                            }
+                        ],
+                    },
+                    {
+                        "assignment_requirement_id": "assignment-capstone",
+                        "assignment_title": "Capstone Demo",
+                        "requirements": [
+                            {
+                                "requirement_type": "mandatory_deliverable",
+                                "title": "Review pilot walkthrough",
+                                "summary": "Students must submit the full walkthrough.",
+                                "evidence": ["Submit a full review pilot walkthrough."],
+                            }
+                        ],
+                    },
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        assignment_requirement_provider,
+        "select_assignment_requirement_extraction_provider",
+        lambda: provider,
+    )
+    monkeypatch.setattr(
+        provider_router,
+        "build_provider_candidates",
+        lambda: [provider_router.ProviderCandidate("heuristic", "heuristic-v1")],
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/sessions/session-newer/extract-assignment-requirements",
+        json={"reasoning_level": "high"},
+        headers={"X-Trace-Id": "trace-assignment-requirements"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "session_id": "session-newer",
+        "assignment_requirements": [
+            {
+                "assignment_requirement_id": "assignment-mcp",
+                "assignment_title": "MCP Integration Project",
+                "requirements": [
+                    {
+                        "requirement_type": "mandatory_deliverable",
+                        "title": "MCP-backed workflow",
+                        "summary": "Students must build the MCP-based workflow.",
+                        "evidence": ["Wire an MCP-backed workflow."],
+                    }
+                ],
+            },
+            {
+                "assignment_requirement_id": "assignment-capstone",
+                "assignment_title": "Capstone Demo",
+                "requirements": [
+                    {
+                        "requirement_type": "mandatory_deliverable",
+                        "title": "Review pilot walkthrough",
+                        "summary": "Students must submit the full walkthrough.",
+                        "evidence": ["Submit a full review pilot walkthrough."],
+                    }
+                ],
+            },
+        ],
+        "warnings": [],
+    }
+    provider_request, recorded_trace_id, repair_context = provider.requests[0]
+    assert recorded_trace_id == "trace-assignment-requirements"
+    assert repair_context is None
+    assert (
+        provider_request.operation_name
+        == assignment_requirement_extraction_spec.DEFAULT_OPERATION_NAME
+    )
+    assert provider_request.reasoning_type == "structured_extraction"
+    assert provider_request.max_assignment_requirements == 5
+    assert provider_request.response_schema["title"] == "AssignmentRequirementsExtractionOutput"
+    assert provider_request.response_schema["required"] == ["assignment_requirements"]
+    assert (
+        provider_request.response_schema["properties"]["assignment_requirements"]["items"][
+            "properties"
+        ]["requirements"]["maxItems"]
+        == 5
+    )
+    assert [source.assignment_requirement_id for source in provider_request.assignment_sources] == [
+        "assignment-mcp",
+        "assignment-capstone",
+    ]
+    assert "Wire an MCP-backed workflow." in provider_request.prompt_input_fields[1].value
+
+
+def test_extract_session_assignment_requirements_returns_warning_when_none_are_stored(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Sessions without assignment rows should return an empty result with a warning."""
+    database_path = tmp_path / "reviewpilot.db"
+    _build_test_database(database_path)
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.execute(
+            """
+            DELETE FROM assignment_requirement
+            WHERE session_content_id = ?
+            """,
+            ("session-empty",),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    provider = _RecordingStructuredExtractionProvider([])
+    monkeypatch.setattr(
+        assignment_requirement_provider,
+        "select_assignment_requirement_extraction_provider",
+        lambda: provider,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/sessions/session-empty/extract-assignment-requirements",
+        headers={"X-Trace-Id": "trace-assignment-warning"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "session_id": "session-empty",
+        "assignment_requirements": [],
+        "warnings": [
+            {
+                "code": "session_assignment_requirements_not_available",
+                "message": "No assignment requirements are stored for this session.",
+            }
+        ],
+    }
+    assert provider.requests == []
+
+
+def test_extract_session_assignment_requirements_repairs_schema_failure_once(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Assignment requirement extraction should retry once on schema failure."""
+    database_path = tmp_path / "reviewpilot.db"
+    _build_test_database(database_path)
+    provider = _RecordingStructuredExtractionProvider(
+        [
+            {"assignment_requirements": [{"assignment_requirement_id": "assignment-mcp"}]},
+            {
+                "assignment_requirements": [
+                    {
+                        "assignment_requirement_id": "assignment-mcp",
+                        "assignment_title": "MCP Integration Project",
+                        "requirements": [
+                            {
+                                "requirement_type": "mandatory_deliverable",
+                                "title": "MCP-backed workflow",
+                                "summary": "Students must build the MCP-based workflow.",
+                                "evidence": ["Wire an MCP-backed workflow."],
+                            }
+                        ],
+                    },
+                    {
+                        "assignment_requirement_id": "assignment-capstone",
+                        "assignment_title": "Capstone Demo",
+                        "requirements": [
+                            {
+                                "requirement_type": "mandatory_deliverable",
+                                "title": "Review pilot walkthrough",
+                                "summary": "Students must submit the full walkthrough.",
+                                "evidence": ["Submit a full review pilot walkthrough."],
+                            }
+                        ],
+                    },
+                ]
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        assignment_requirement_provider,
+        "select_assignment_requirement_extraction_provider",
+        lambda: provider,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/sessions/session-newer/extract-assignment-requirements",
+        headers={"X-Trace-Id": "trace-assignment-repair"},
+    )
+
+    assert response.status_code == 200
+    assert len(provider.requests) == 2
+    _, _, repair_context = provider.requests[1]
+    assert repair_context is not None
+    assert repair_context.schema_check_failed is True
+    assert repair_context.validation_errors
+    assert response.json()["assignment_requirements"][0]["assignment_requirement_id"] == (
+        "assignment-mcp"
+    )
+
+
+def test_extract_session_assignment_requirements_returns_structured_error_for_missing_session(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Missing sessions should return a structured 404 for assignment extraction."""
+    database_path = tmp_path / "reviewpilot.db"
+    _build_test_database(database_path)
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/sessions/session-missing/extract-assignment-requirements",
+        headers={"X-Trace-Id": "trace-assignment-missing"},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {
+            "code": "session_not_found",
+            "message": "Unable to find the requested session.",
+            "trace_id": "trace-assignment-missing",
+        }
+    }
+
+
+def test_extract_session_assignment_requirements_returns_structured_error_for_missing_database(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Assignment extraction should return a structured 500 on DB failure."""
+    missing_database_path = tmp_path / "missing.db"
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(missing_database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/sessions/session-newer/extract-assignment-requirements",
+        headers={"X-Trace-Id": "trace-assignment-query-failure"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {
+            "code": "assignment_requirement_extraction_source_query_failed",
+            "message": (
+                "Unable to fetch the assignment data required for requirement extraction."
+            ),
+            "trace_id": "trace-assignment-query-failure",
+        }
+    }
+
+
+def test_extract_session_assignment_requirements_emits_structured_telemetry(
+    monkeypatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Assignment requirement extraction should emit workflow telemetry."""
+    database_path = tmp_path / "reviewpilot.db"
+    _build_test_database(database_path)
+    provider = _RecordingStructuredExtractionProvider(
+        [
+            {
+                "assignment_requirements": [
+                    {
+                        "assignment_requirement_id": "assignment-empty",
+                        "assignment_title": "Telemetry Drill",
+                        "requirements": [
+                            {
+                                "requirement_type": "mandatory_deliverable",
+                                "title": "Tracing notes",
+                                "summary": "Students must submit tracing notes.",
+                                "evidence": ["Submit tracing notes."],
+                            }
+                        ],
+                    }
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        assignment_requirement_provider,
+        "select_assignment_requirement_extraction_provider",
+        lambda: provider,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    configure_logging(force=True)
+    client = TestClient(app)
+
+    response = client.post(
+        "/sessions/session-empty/extract-assignment-requirements",
+        headers={"X-Trace-Id": "trace-assignment-telemetry"},
+    )
+
+    assert response.status_code == 200
+    stdout = capsys.readouterr().out.strip().splitlines()
+    telemetry_events = [json.loads(line) for line in stdout if line.startswith("{")]
+    assert [event["step_name"] for event in telemetry_events] == [
+        "extract_session_assignment_requirements.request_received",
+        "list_session_assignment_requirement_sources.query_started",
+        "list_session_assignment_requirement_sources.query_completed",
+        "extract_session_assignment_requirements.assignment_sources_fetched",
+        "extract_session_assignment_requirements.canonical_request_built",
+        "extract_session_assignment_requirements.provider_selection_started",
+        "extract_session_assignment_requirements.provider_selection_completed",
+        "extract_session_assignment_requirements.provider_call_started",
+        "extract_session_assignment_requirements.provider_call_completed",
+        "extract_session_assignment_requirements.schema_validation_passed",
+        "extract_session_assignment_requirements.completed",
+        "extract_session_assignment_requirements.request_completed",
+    ]
+    assert all(event["trace_id"] == "trace-assignment-telemetry" for event in telemetry_events)
+    assignment_events = [
+        event
+        for event in telemetry_events
+        if event["step_name"].startswith("extract_session_assignment_requirements.")
+    ]
+    assert all(event["session_id"] == "session-empty" for event in assignment_events)
+    assert all(
+        event["tool_name"] == assignment_requirement_extraction_spec.DEFAULT_TOOL_NAME
+        for event in assignment_events
+    )
+    assert telemetry_events[4]["details"] == {
+        "session_id": "session-empty",
+        "operation_name": assignment_requirement_extraction_spec.DEFAULT_OPERATION_NAME,
+        "reasoning_level": "medium",
+        "reasoning_type": assignment_requirement_provider.DEFAULT_REASONING_TYPE,
+        "output_mode": assignment_requirement_provider.DEFAULT_OUTPUT_MODE,
+        "max_assignment_requirements": 5,
+        "response_schema_title": "AssignmentRequirementsExtractionOutput",
+        "assignment_count": 1,
+    }
+    assert telemetry_events[7]["details"] == {
+        "provider_reasoning_level": None,
+        "provider_reasoning_type": None,
+    }
 
 
 def test_get_session_submissions_returns_all_submissions_for_session(
