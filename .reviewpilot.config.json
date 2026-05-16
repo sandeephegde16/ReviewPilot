@@ -1,0 +1,22 @@
+{
+  "concept_extraction": {
+    "primary_provider": "anthropic",
+    "fallback_providers": [
+      "gemini",
+      "heuristic"
+    ],
+    "model_candidates": {
+      "anthropic": [
+        "claude-sonnet-4-6"
+      ],
+      "gemini": [
+        "gemini-2.5-flash"
+      ],
+      "heuristic": [
+        "heuristic-v1"
+      ]
+    },
+    "cooldown_seconds": 60,
+    "failures_before_cooldown": 2
+  }
+}
