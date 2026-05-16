@@ -96,6 +96,9 @@ class StructuredExtractionSpec[OutputModelT: BaseModel, ResponseModelT]:
     schema_failure_message: str
     select_primary_provider: SelectPrimaryProvider
     build_provider: BuildProvider
+    build_provider_candidates: Callable[[], list[provider_router.ProviderCandidate]] | None = (
+        None
+    )
 
 
 @dataclass(frozen=True)
@@ -191,7 +194,11 @@ def extract_with_provider_routing[OutputModelT: BaseModel, ResponseModelT](
         validation_status="pending",
         retry_count=0,
     )
-    candidates = provider_router.build_provider_candidates()
+    candidates = (
+        spec.build_provider_candidates()
+        if spec.build_provider_candidates is not None
+        else provider_router.build_provider_candidates()
+    )
     last_error: StructuredExtractionError | None = None
     for attempt_index, candidate in enumerate(candidates, start=1):
         if provider_router.is_candidate_in_cooldown(candidate):
@@ -307,7 +314,7 @@ def _build_provider_from_candidate[OutputModelT: BaseModel, ResponseModelT](
     spec: StructuredExtractionSpec[OutputModelT, ResponseModelT],
 ) -> StructuredExtractionProvider:
     """Build a provider instance for one router candidate."""
-    if attempt_index == 1:
+    if attempt_index == 1 and spec.build_provider_candidates is None:
         return spec.select_primary_provider()
     return spec.build_provider(
         provider_name=candidate.provider_name,

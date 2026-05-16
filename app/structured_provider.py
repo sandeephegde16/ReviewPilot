@@ -43,7 +43,9 @@ from app.heuristic_provider import (
 from app.provider_http import post_json as _post_json
 from app.schemas import (
     AssignmentRequirementExtractionSource,
+    ConceptGradingCriterion,
     ReasoningLevel,
+    SubmissionSourceType,
 )
 
 DEFAULT_REASONING_TYPE = "structured_extraction"
@@ -88,6 +90,18 @@ class CanonicalStructuredExtractionRequest(BaseModel):
     """Provider-agnostic request for one structured extraction workflow."""
 
     session_id: str = Field(description="Unique identifier for the session.")
+    student_id: str = Field(
+        default="",
+        description="Unique identifier for the student, when relevant to this workflow.",
+    )
+    student_code: str = Field(
+        default="",
+        description="Stable course-visible identifier for the student, when relevant.",
+    )
+    student_full_name: str = Field(
+        default="",
+        description="Full name of the student, when relevant to this workflow.",
+    )
     operation_name: str = Field(description="Canonical internal operation name.")
     reasoning_level: ReasoningLevel = Field(description="Requested reasoning depth.")
     reasoning_type: str = Field(description="Canonical extraction mode.")
@@ -128,9 +142,33 @@ class CanonicalStructuredExtractionRequest(BaseModel):
         default=None,
         description="Normalized transcript text used for concept extraction when available.",
     )
+    source_type: SubmissionSourceType | None = Field(
+        default=None,
+        description="Submission source type used for project grading when relevant.",
+    )
+    repo_url: str | None = Field(
+        default=None,
+        description="Repository or pull request URL used for project grading when relevant.",
+    )
+    local_path: str | None = Field(
+        default=None,
+        description="Local project folder path used for project grading when relevant.",
+    )
+    zip_path: str | None = Field(
+        default=None,
+        description="Zip archive path used for project grading when relevant.",
+    )
     assignment_sources: list[AssignmentRequirementExtractionSource] = Field(
         default_factory=list,
         description="Stored assignment rows used during assignment requirement extraction.",
+    )
+    grading_concepts: list[ConceptGradingCriterion] = Field(
+        default_factory=list,
+        description="Requested project grading concepts when relevant to this workflow.",
+    )
+    project_evidence_summary: str = Field(
+        default="",
+        description="Bounded project evidence summary used for grading when relevant.",
     )
     max_concepts: int | None = Field(
         default=None,

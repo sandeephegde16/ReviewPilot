@@ -22,6 +22,16 @@ def test_load_application_config_reads_provider_routing_settings(tmp_path) -> No
             },
             "cooldown_seconds": 15,
             "failures_before_cooldown": 3
+          },
+          "concept_grading": {
+            "primary_provider": "anthropic",
+            "fallback_providers": ["gemini"],
+            "model_candidates": {
+              "anthropic": ["claude-sonnet-4-6"],
+              "gemini": ["gemini-2.5-flash"]
+            },
+            "cooldown_seconds": 20,
+            "failures_before_cooldown": 4
           }
         }
         """.strip(),
@@ -35,6 +45,11 @@ def test_load_application_config_reads_provider_routing_settings(tmp_path) -> No
     assert loaded_config.concept_extraction.model_candidates.gemini == ["gemini-2.5-pro"]
     assert loaded_config.concept_extraction.cooldown_seconds == 15
     assert loaded_config.concept_extraction.failures_before_cooldown == 3
+    assert loaded_config.concept_grading.primary_provider == "anthropic"
+    assert loaded_config.concept_grading.fallback_providers == ["gemini"]
+    assert loaded_config.concept_grading.model_candidates.anthropic == ["claude-sonnet-4-6"]
+    assert loaded_config.concept_grading.cooldown_seconds == 20
+    assert loaded_config.concept_grading.failures_before_cooldown == 4
 
 
 def test_load_environment_file_sets_provider_api_keys(

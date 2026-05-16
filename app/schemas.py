@@ -6,9 +6,11 @@ from copy import deepcopy
 from functools import lru_cache
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 ReasoningLevel = Literal["low", "medium", "high"]
+SubmissionSourceType = Literal["github_pr", "local_folder", "zip_upload"]
+CoverageLevel = Literal["missing", "weak", "partial", "strong"]
 
 
 class SessionSummary(BaseModel):
@@ -64,8 +66,7 @@ class GradeableConcept(BaseModel):
     grading_reason: str = Field(description="Why this concept is relevant for grading.")
     concept_importance: int = Field(
         description=(
-            "Importance score from 1 to 10 based on how central the concept "
-            "is to the session."
+            "Importance score from 1 to 10 based on how central the concept is to the session."
         ),
         ge=1,
         le=10,
@@ -108,6 +109,71 @@ class ExtractAssignmentRequirementsRequest(BaseModel):
     )
 
 
+class ConceptGradingCriterion(BaseModel):
+    """One requested concept and its grading weight for project scoring."""
+
+    concept_name: str = Field(description="Concept label that must be graded.")
+    summary: str = Field(description="Short explanation of what the concept covers.")
+    grading_reason: str = Field(description="Why this concept matters for grading.")
+    max_score: int = Field(
+        ge=1,
+        description="Maximum number of points available for this concept.",
+    )
+
+
+class GradeConceptsRequest(BaseModel):
+    """Public request payload for project concept grading."""
+
+    student_id: str = Field(description="Unique identifier for the student being graded.")
+    session_id: str = Field(description="Unique identifier for the related session.")
+    source_type: SubmissionSourceType = Field(
+        description="Submission source type used to collect project evidence."
+    )
+    repo_url: str | None = Field(
+        default=None,
+        description="Repository or pull request URL when the source type is github_pr.",
+    )
+    local_path: str | None = Field(
+        default=None,
+        description="Local folder path when the source type is local_folder.",
+    )
+    zip_path: str | None = Field(
+        default=None,
+        description="Zip archive path when the source type is zip_upload.",
+    )
+    reasoning_level: ReasoningLevel = Field(
+        default="medium",
+        description="Requested reasoning depth for concept grading.",
+    )
+    concepts: list[ConceptGradingCriterion] = Field(
+        min_length=1,
+        description="Concepts that must be scored against the project evidence.",
+    )
+
+    @model_validator(mode="after")
+    def validate_source_fields(self) -> GradeConceptsRequest:
+        """Require the source locator that matches the selected source type."""
+        if self.source_type == "github_pr":
+            if self.repo_url is None or self.local_path is not None or self.zip_path is not None:
+                raise ValueError(
+                    "github_pr submissions require repo_url and must not include "
+                    "local_path or zip_path."
+                )
+        elif self.source_type == "local_folder":
+            if self.local_path is None or self.repo_url is not None or self.zip_path is not None:
+                raise ValueError(
+                    "local_folder submissions require local_path and must not include "
+                    "repo_url or zip_path."
+                )
+        else:
+            if self.zip_path is None or self.repo_url is not None or self.local_path is not None:
+                raise ValueError(
+                    "zip_upload submissions require zip_path and must not include "
+                    "repo_url or local_path."
+                )
+        return self
+
+
 def _inline_local_json_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
     """Inline local Pydantic JSON schema references for provider compatibility."""
     schema_copy = deepcopy(schema)
@@ -132,9 +198,7 @@ def _inline_schema_node(
         if referenced_definition is None:
             raise ValueError(f"Missing JSON schema definition for reference: {reference}")
         merged_definition = deepcopy(referenced_definition)
-        remaining_fields = {
-            key: value for key, value in node.items() if key != "$ref"
-        }
+        remaining_fields = {key: value for key, value in node.items() if key != "$ref"}
         merged_definition.update(remaining_fields)
         return _inline_schema_node(merged_definition, definitions)
 
@@ -240,6 +304,165 @@ class ExtractAssignmentRequirementsResponse(BaseModel):
     )
 
 
+class ConceptScoreResult(BaseModel):
+    """One evidence-backed score awarded to a requested grading concept."""
+
+    concept: str = Field(description="Concept label that was graded.")
+    score: int = Field(
+        ge=0,
+        description="Awarded score for the concept.",
+    )
+    max_score: int = Field(
+        ge=1,
+        description="Maximum number of points available for the concept.",
+    )
+    coverage_level: CoverageLevel = Field(
+        description="Strength of concept coverage observed in the project evidence."
+    )
+    evidence: list[str] = Field(
+        description="Concrete project evidence supporting the awarded score.",
+        min_length=1,
+    )
+    deductions: list[str] = Field(
+        default_factory=list,
+        description="Reasons points were not awarded in full.",
+    )
+
+    @model_validator(mode="after")
+    def validate_score_range(self) -> ConceptScoreResult:
+        """Ensure awarded scores never exceed the configured concept maximum."""
+        if self.score > self.max_score:
+            raise ValueError("score must be less than or equal to max_score.")
+        return self
+
+
+class ConceptGradingOutput(BaseModel):
+    """Validated structured output returned by the concept grading provider."""
+
+    concept_scores: list[ConceptScoreResult] = Field(
+        description="Concept scores derived from the collected project evidence.",
+        min_length=1,
+    )
+
+
+@lru_cache(maxsize=1)
+def _build_cached_concept_grading_output_schema() -> dict[str, Any]:
+    """Cache the JSON schema used for structured concept grading output."""
+    return _inline_local_json_schema_refs(ConceptGradingOutput.model_json_schema())
+
+
+def get_concept_grading_output_schema(
+    *,
+    max_concept_scores: int | None = None,
+) -> dict[str, Any]:
+    """Return a provider schema for concept grading with an optional item cap."""
+    schema = deepcopy(_build_cached_concept_grading_output_schema())
+    if max_concept_scores is not None:
+        schema["properties"]["concept_scores"]["maxItems"] = max_concept_scores
+    return schema
+
+
+class ProjectEvidenceFileSnippet(BaseModel):
+    """One bounded file excerpt included in collected project evidence."""
+
+    path: str = Field(description="Repository-relative path for the excerpted file.")
+    content_excerpt: str = Field(description="Bounded text excerpt collected from the file.")
+
+
+class ProjectEvidenceBundle(BaseModel):
+    """Collected project evidence prepared before concept grading."""
+
+    project_root: str = Field(description="Resolved local root path for the collected project.")
+    file_inventory: list[str] = Field(
+        default_factory=list,
+        description="Repository-relative file inventory used to ground grading decisions.",
+    )
+    documentation_snippets: list[ProjectEvidenceFileSnippet] = Field(
+        default_factory=list,
+        description="Collected documentation excerpts such as README content.",
+    )
+    implementation_snippets: list[ProjectEvidenceFileSnippet] = Field(
+        default_factory=list,
+        description="Collected implementation excerpts used for concept grading.",
+    )
+    test_snippets: list[ProjectEvidenceFileSnippet] = Field(
+        default_factory=list,
+        description="Collected test excerpts used for concept grading.",
+    )
+    summary_text: str = Field(
+        description="Bounded human-readable summary of the collected project evidence."
+    )
+
+
+class ConceptGradingContext(BaseModel):
+    """Internal student, session, and source metadata used for concept grading."""
+
+    student_id: str = Field(description="Unique identifier for the student.")
+    student_code: str = Field(description="Stable course-visible identifier for the student.")
+    student_full_name: str = Field(description="Full name of the student.")
+    session_id: str = Field(description="Unique identifier for the session.")
+    assignment_requirement_id: str = Field(
+        description="Unique identifier for the assignment requirement being graded."
+    )
+    session_title: str = Field(description="Stored title for the related session.")
+    session_topic: str = Field(description="Stored topic summary for the related session.")
+    source_type: SubmissionSourceType = Field(description="Submission source type.")
+    repo_url: str | None = Field(
+        default=None,
+        description="Repository or pull request URL when the source type is github_pr.",
+    )
+    local_path: str | None = Field(
+        default=None,
+        description="Local folder path when the source type is local_folder.",
+    )
+    zip_path: str | None = Field(
+        default=None,
+        description="Zip archive path when the source type is zip_upload.",
+    )
+
+
+class ConceptGradingSource(ConceptGradingContext):
+    """Internal grading source passed into canonical concept grading preparation."""
+
+    concepts: list[ConceptGradingCriterion] = Field(
+        description="Requested concept grading criteria for the submission.",
+        min_length=1,
+    )
+    project_evidence: ProjectEvidenceBundle = Field(
+        description="Collected evidence bundle prepared from the project source."
+    )
+
+
+class GradeConceptsResponse(BaseModel):
+    """Public response payload for scored project concepts."""
+
+    student_id: str = Field(description="Unique identifier for the student.")
+    student_code: str = Field(description="Stable course-visible identifier for the student.")
+    student_full_name: str = Field(description="Full name of the student.")
+    session_id: str = Field(description="Unique identifier for the session.")
+    source_type: SubmissionSourceType = Field(description="Submission source type.")
+    repo_url: str | None = Field(
+        default=None,
+        description="Repository or pull request URL when the source type is github_pr.",
+    )
+    local_path: str | None = Field(
+        default=None,
+        description="Local folder path when the source type is local_folder.",
+    )
+    zip_path: str | None = Field(
+        default=None,
+        description="Zip archive path when the source type is zip_upload.",
+    )
+    concept_scores: list[ConceptScoreResult] = Field(
+        description="Evidence-backed scores for each requested concept.",
+        min_length=1,
+    )
+    warnings: list[ApiWarning] = Field(
+        default_factory=list,
+        description="Warnings describing any fallback behavior during grading.",
+    )
+
+
 class SessionSubmission(BaseModel):
     """Public response model for an assignment submission in a session."""
 
@@ -255,9 +478,7 @@ class SessionSubmission(BaseModel):
     student_id: str = Field(description="Unique identifier for the student.")
     student_code: str = Field(description="Stable student code used by the course.")
     student_full_name: str = Field(description="Full name of the submitting student.")
-    source_type: Literal["github_pr", "local_folder", "zip_upload"] = Field(
-        description="Submission source type."
-    )
+    source_type: SubmissionSourceType = Field(description="Submission source type.")
     repo_url: str | None = Field(
         default=None,
         description="Repository URL when the source type is github_pr.",
@@ -302,9 +523,7 @@ class StudentSubmission(BaseModel):
     student_id: str = Field(description="Unique identifier for the student.")
     student_code: str = Field(description="Stable student code used by the course.")
     student_full_name: str = Field(description="Full name of the submitting student.")
-    source_type: Literal["github_pr", "local_folder", "zip_upload"] = Field(
-        description="Submission source type."
-    )
+    source_type: SubmissionSourceType = Field(description="Submission source type.")
     repo_url: str | None = Field(
         default=None,
         description="Repository URL when the source type is github_pr.",

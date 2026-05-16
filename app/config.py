@@ -14,6 +14,7 @@ DEFAULT_DATABASE_PATH = Path(__file__).resolve().parent.parent / "db" / "reviewp
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / ".reviewpilot.config.json"
 DEFAULT_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 DEFAULT_CONCEPT_EXTRACTION_PROVIDER = "anthropic"
+DEFAULT_CONCEPT_GRADING_PROVIDER = "anthropic"
 DEFAULT_CONCEPT_EXTRACTION_MODEL = "heuristic-v1"
 DEFAULT_ANTHROPIC_CONCEPT_MODEL = "claude-sonnet-4-6"
 DEFAULT_GEMINI_CONCEPT_MODEL = "gemini-2.5-flash"
@@ -41,12 +42,25 @@ class ConceptExtractionConfig(BaseModel):
     failures_before_cooldown: int = DEFAULT_PROVIDER_FAILURES_BEFORE_COOLDOWN
 
 
+class ConceptGradingConfig(BaseModel):
+    """Provider routing settings for concept grading."""
+
+    primary_provider: str = DEFAULT_CONCEPT_GRADING_PROVIDER
+    fallback_providers: list[str] = Field(default_factory=list)
+    model_candidates: ProviderModelCandidates = Field(
+        default_factory=ProviderModelCandidates
+    )
+    cooldown_seconds: int = DEFAULT_PROVIDER_COOLDOWN_SECONDS
+    failures_before_cooldown: int = DEFAULT_PROVIDER_FAILURES_BEFORE_COOLDOWN
+
+
 class ReviewPilotConfig(BaseModel):
     """Top-level application config loaded from the repo config file."""
 
     concept_extraction: ConceptExtractionConfig = Field(
         default_factory=ConceptExtractionConfig
     )
+    concept_grading: ConceptGradingConfig = Field(default_factory=ConceptGradingConfig)
 
 
 def load_environment_file(environment_path: Path | None = None) -> None:
@@ -93,6 +107,14 @@ def get_concept_extraction_provider_name() -> str:
     return _get_application_config().concept_extraction.primary_provider
 
 
+def get_concept_grading_provider_name() -> str:
+    """Return the configured concept grading provider name."""
+    configured_provider_name = os.getenv("REVIEWPILOT_CONCEPT_GRADING_PROVIDER")
+    if configured_provider_name:
+        return configured_provider_name
+    return _get_application_config().concept_grading.primary_provider
+
+
 def get_concept_extraction_fallback_provider_names(
     primary_provider_name: str | None = None,
 ) -> list[str]:
@@ -110,6 +132,26 @@ def get_concept_extraction_fallback_provider_names(
         return ["gemini", "heuristic"]
     if primary_provider_name == "gemini":
         return ["anthropic", "heuristic"]
+    return ["anthropic", "gemini"]
+
+
+def get_concept_grading_fallback_provider_names(
+    primary_provider_name: str | None = None,
+) -> list[str]:
+    """Return the ordered fallback providers for concept grading."""
+    configured_fallbacks = os.getenv("REVIEWPILOT_CONCEPT_GRADING_FALLBACK_PROVIDERS")
+    if configured_fallbacks:
+        return _parse_csv_config(configured_fallbacks)
+
+    config_fallbacks = _get_application_config().concept_grading.fallback_providers
+    if config_fallbacks:
+        return config_fallbacks
+
+    primary_provider_name = primary_provider_name or get_concept_grading_provider_name()
+    if primary_provider_name == "anthropic":
+        return ["gemini"]
+    if primary_provider_name == "gemini":
+        return ["anthropic"]
     return ["anthropic", "gemini"]
 
 
@@ -131,6 +173,24 @@ def get_concept_extraction_model_name(provider_name: str | None = None) -> str:
     return DEFAULT_CONCEPT_EXTRACTION_MODEL
 
 
+def get_concept_grading_model_name(provider_name: str | None = None) -> str:
+    """Return the configured concept grading model name."""
+    configured_model_name = os.getenv("REVIEWPILOT_CONCEPT_GRADING_MODEL")
+    if configured_model_name:
+        return configured_model_name
+
+    provider_name = (provider_name or get_concept_grading_provider_name()).strip().lower()
+    configured_model_candidates = _get_concept_grading_configured_model_candidates(provider_name)
+    if configured_model_candidates:
+        return configured_model_candidates[0]
+
+    if provider_name == "anthropic":
+        return DEFAULT_ANTHROPIC_CONCEPT_MODEL
+    if provider_name == "gemini":
+        return DEFAULT_GEMINI_CONCEPT_MODEL
+    return DEFAULT_ANTHROPIC_CONCEPT_MODEL
+
+
 def get_concept_extraction_model_names(provider_name: str) -> list[str]:
     """Return the ordered model candidates for one provider."""
     provider_name = provider_name.strip().lower()
@@ -150,6 +210,31 @@ def get_concept_extraction_model_names(provider_name: str) -> list[str]:
         model_names = _get_configured_model_candidates(provider_name)
     if provider_name == get_concept_extraction_provider_name():
         configured_primary_model_name = os.getenv("REVIEWPILOT_CONCEPT_MODEL")
+        if configured_primary_model_name:
+            model_names.insert(0, configured_primary_model_name)
+    model_names.append(default_model)
+    return _deduplicate_preserving_order(model_names)
+
+
+def get_concept_grading_model_names(provider_name: str) -> list[str]:
+    """Return the ordered concept grading model candidates for one provider."""
+    provider_name = provider_name.strip().lower()
+    if provider_name == "anthropic":
+        configured_models = os.getenv("REVIEWPILOT_ANTHROPIC_CONCEPT_GRADING_MODELS")
+        default_model = DEFAULT_ANTHROPIC_CONCEPT_MODEL
+    elif provider_name == "gemini":
+        configured_models = os.getenv("REVIEWPILOT_GEMINI_CONCEPT_GRADING_MODELS")
+        default_model = DEFAULT_GEMINI_CONCEPT_MODEL
+    else:
+        configured_models = None
+        default_model = DEFAULT_ANTHROPIC_CONCEPT_MODEL
+
+    if configured_models:
+        model_names = _parse_csv_config(configured_models)
+    else:
+        model_names = _get_concept_grading_configured_model_candidates(provider_name)
+    if provider_name == get_concept_grading_provider_name():
+        configured_primary_model_name = os.getenv("REVIEWPILOT_CONCEPT_GRADING_MODEL")
         if configured_primary_model_name:
             model_names.insert(0, configured_primary_model_name)
     model_names.append(default_model)
@@ -192,6 +277,16 @@ def _parse_csv_config(configured_value: str | None) -> list[str]:
 def _get_configured_model_candidates(provider_name: str) -> list[str]:
     """Return provider model candidates from the repo config file."""
     configured_models = _get_application_config().concept_extraction.model_candidates
+    if provider_name == "anthropic":
+        return configured_models.anthropic.copy()
+    if provider_name == "gemini":
+        return configured_models.gemini.copy()
+    return configured_models.heuristic.copy()
+
+
+def _get_concept_grading_configured_model_candidates(provider_name: str) -> list[str]:
+    """Return concept grading model candidates from the repo config file."""
+    configured_models = _get_application_config().concept_grading.model_candidates
     if provider_name == "anthropic":
         return configured_models.anthropic.copy()
     if provider_name == "gemini":

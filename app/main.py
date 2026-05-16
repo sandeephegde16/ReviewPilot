@@ -25,6 +25,9 @@ from app.assignment_requirement_extraction_spec import (
 from app.assignment_requirement_extraction_spec import (
     DEFAULT_TOOL_NAME as DEFAULT_ASSIGNMENT_TOOL_NAME,
 )
+from app.assignment_requirement_store import (
+    save_assignment_requirement_requirements_json,
+)
 from app.concept_extraction_spec import (
     CONCEPT_EXTRACTION_SPEC,
     prepare_concept_extraction,
@@ -38,22 +41,46 @@ from app.concept_extraction_spec import (
 from app.concept_extraction_spec import (
     DEFAULT_TOOL_NAME as DEFAULT_CONCEPT_TOOL_NAME,
 )
+from app.concept_grading_spec import (
+    CONCEPT_GRADING_SPEC,
+    prepare_concept_grading,
+)
+from app.concept_grading_spec import (
+    DEFAULT_REASONING_TYPE as DEFAULT_CONCEPT_GRADING_REASONING_TYPE,
+)
+from app.concept_grading_spec import (
+    DEFAULT_STEP_PREFIX as DEFAULT_CONCEPT_GRADING_STEP_PREFIX,
+)
+from app.concept_grading_spec import (
+    DEFAULT_TOOL_NAME as DEFAULT_CONCEPT_GRADING_TOOL_NAME,
+)
 from app.config import get_database_path
 from app.logging_config import configure_logging
+from app.project_evidence import (
+    ProjectEvidenceCollectionError,
+    collect_project_evidence,
+)
 from app.schemas import (
     ApiError,
     ApiErrorResponse,
+    ConceptGradingSource,
     ExtractAssignmentRequirementsRequest,
     ExtractAssignmentRequirementsResponse,
     ExtractConceptsRequest,
     ExtractConceptsResponse,
+    GradeConceptsRequest,
+    GradeConceptsResponse,
     SessionSubmission,
     SessionSummary,
     StudentSubmission,
 )
+from app.session_content_store import save_session_concepts_json
 from app.session_store import (
+    AmbiguousStudentSubmissionError,
     SessionNotFoundError,
     StudentNotFoundError,
+    StudentSubmissionNotFoundError,
+    get_concept_grading_context,
     get_session_extraction_source,
     list_session_assignment_requirement_sources,
     list_session_submissions,
@@ -66,6 +93,7 @@ from app.structured_extraction import (
     StructuredExtractionSpec,
     execute_structured_extraction,
 )
+from app.student_grade_store import save_student_concept_grade_json
 from app.telemetry import WorkflowTelemetryEmitter, emit_event
 
 configure_logging()
@@ -171,6 +199,10 @@ def _run_session_structured_extraction_endpoint[
         [SourceT, str], PreparedStructuredExtraction[OutputModelT, ResponseModelT]
     ],
     extraction_spec: StructuredExtractionSpec[OutputModelT, ResponseModelT],
+    persist_response: Callable[[ResponseModelT], None] | None = None,
+    persisted_step_suffix: str | None = None,
+    persistence_failure_code: str | None = None,
+    persistence_failure_message: str | None = None,
 ) -> ResponseModelT | JSONResponse:
     """Run the shared request flow for one session-scoped structured extraction API."""
     start_time = perf_counter()
@@ -246,6 +278,51 @@ def _run_session_structured_extraction_endpoint[
             trace_id=trace_id,
         )
 
+    if persist_response is not None:
+        try:
+            persist_response(extraction_result.response)
+        except SessionNotFoundError:
+            request_telemetry.emit(
+                step_suffix="request_failed",
+                provider_name=extraction_result.provider_name,
+                model_name=extraction_result.model_name,
+                validation_status="failed",
+                retry_count=extraction_result.retry_count,
+                elapsed_ms=_elapsed_ms(start_time),
+                failure_reason="session_not_found",
+            )
+            return _build_error_response(
+                status_code=404,
+                code="session_not_found",
+                message="Unable to find the requested session.",
+                trace_id=trace_id,
+            )
+        except sqlite3.Error:
+            request_telemetry.emit(
+                step_suffix="request_failed",
+                provider_name=extraction_result.provider_name,
+                model_name=extraction_result.model_name,
+                validation_status="failed",
+                retry_count=extraction_result.retry_count,
+                elapsed_ms=_elapsed_ms(start_time),
+                failure_reason=persistence_failure_code,
+            )
+            return _build_error_response(
+                status_code=500,
+                code=persistence_failure_code or source_query_failure_code,
+                message=persistence_failure_message or source_query_failure_message,
+                trace_id=trace_id,
+            )
+
+        if persisted_step_suffix is not None:
+            request_telemetry.emit(
+                step_suffix=persisted_step_suffix,
+                provider_name=extraction_result.provider_name,
+                model_name=extraction_result.model_name,
+                validation_status="passed",
+                retry_count=extraction_result.retry_count,
+            )
+
     request_telemetry.emit(
         step_suffix="request_completed",
         provider_name=extraction_result.provider_name,
@@ -274,7 +351,7 @@ def extract_session_concepts(
     request: Annotated[ExtractConceptsRequest | None, Body()] = None,
     x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
 ) -> ExtractConceptsResponse | JSONResponse:
-    """Extract gradeable concepts for a session using normalized session evidence."""
+    """Extract gradeable concepts and persist them to the session content row."""
     trace_id = x_trace_id or uuid4().hex
     extraction_request = request or ExtractConceptsRequest()
     return _run_session_structured_extraction_endpoint(
@@ -299,6 +376,15 @@ def extract_session_concepts(
             reasoning_level=reasoning_level,
         ),
         extraction_spec=CONCEPT_EXTRACTION_SPEC,
+        persist_response=lambda response: save_session_concepts_json(
+            database_path=get_database_path(),
+            session_id=session_id,
+            concepts=response.concepts,
+            trace_id=trace_id,
+        ),
+        persisted_step_suffix="concepts_persisted",
+        persistence_failure_code="session_concepts_persistence_failed",
+        persistence_failure_message="Unable to save extracted concepts for the session.",
     )
 
 
@@ -313,7 +399,7 @@ def extract_session_assignment_requirements(
     request: Annotated[ExtractAssignmentRequirementsRequest | None, Body()] = None,
     x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
 ) -> ExtractAssignmentRequirementsResponse | JSONResponse:
-    """Extract assignment requirements for a session from stored assignment evidence."""
+    """Extract assignment requirements and persist them to assignment_requirement rows."""
     trace_id = x_trace_id or uuid4().hex
     extraction_request = request or ExtractAssignmentRequirementsRequest()
     return _run_session_structured_extraction_endpoint(
@@ -341,7 +427,248 @@ def extract_session_assignment_requirements(
             )
         ),
         extraction_spec=ASSIGNMENT_REQUIREMENT_EXTRACTION_SPEC,
+        persist_response=lambda response: save_assignment_requirement_requirements_json(
+            database_path=get_database_path(),
+            session_id=session_id,
+            assignment_requirements=response.assignment_requirements,
+            trace_id=trace_id,
+        ),
+        persisted_step_suffix="assignment_requirements_persisted",
+        persistence_failure_code="assignment_requirements_persistence_failed",
+        persistence_failure_message="Unable to save extracted assignment requirements.",
     )
+
+
+@app.post(
+    "/grade/concepts",
+    response_model=GradeConceptsResponse,
+    responses={404: {"model": ApiErrorResponse}, 500: {"model": ApiErrorResponse}},
+    tags=["grading"],
+)
+def grade_submission_concepts(
+    request: Annotated[GradeConceptsRequest, Body()],
+    x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
+) -> GradeConceptsResponse | JSONResponse:
+    """Grade a student's project against requested concepts using collected project evidence."""
+    trace_id = x_trace_id or uuid4().hex
+    start_time = perf_counter()
+    request_telemetry = _build_request_telemetry(
+        trace_id=trace_id,
+        session_id=request.session_id,
+        tool_name=DEFAULT_CONCEPT_GRADING_TOOL_NAME,
+        reasoning_level=request.reasoning_level,
+        reasoning_type=DEFAULT_CONCEPT_GRADING_REASONING_TYPE,
+        step_prefix=DEFAULT_CONCEPT_GRADING_STEP_PREFIX,
+    )
+    request_telemetry.emit(
+        step_suffix="request_received",
+        validation_status="pending",
+        retry_count=0,
+    )
+
+    try:
+        grading_context = get_concept_grading_context(
+            database_path=get_database_path(),
+            student_id=request.student_id,
+            session_id=request.session_id,
+            source_type=request.source_type,
+            repo_url=request.repo_url,
+            local_path=request.local_path,
+            zip_path=request.zip_path,
+            trace_id=trace_id,
+        )
+        request_telemetry.emit(
+            step_suffix="grading_context_fetched",
+            validation_status="passed",
+            retry_count=0,
+        )
+        request_telemetry.emit(
+            step_suffix="project_evidence_collection_started",
+            validation_status="pending",
+            retry_count=0,
+        )
+        project_evidence = collect_project_evidence(
+            source_type=request.source_type,
+            repo_url=request.repo_url,
+            local_path=request.local_path,
+            zip_path=request.zip_path,
+        )
+        request_telemetry.emit(
+            step_suffix="project_evidence_collected",
+            validation_status="passed",
+            retry_count=0,
+            details={
+                "project_file_count": len(project_evidence.file_inventory),
+                "documentation_snippet_count": len(project_evidence.documentation_snippets),
+                "implementation_snippet_count": len(project_evidence.implementation_snippets),
+                "test_snippet_count": len(project_evidence.test_snippets),
+            },
+        )
+        grading_source = ConceptGradingSource(
+            **grading_context.model_dump(),
+            concepts=request.concepts,
+            project_evidence=project_evidence,
+        )
+        prepared_extraction = prepare_concept_grading(
+            grading_source=grading_source,
+            reasoning_level=request.reasoning_level,
+        )
+        extraction_result = execute_structured_extraction(
+            spec=CONCEPT_GRADING_SPEC,
+            prepared=prepared_extraction,
+            trace_id=trace_id,
+        )
+    except StudentNotFoundError:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="student_not_found",
+        )
+        return _build_error_response(
+            status_code=404,
+            code="student_not_found",
+            message="Unable to find the requested student.",
+            trace_id=trace_id,
+        )
+    except SessionNotFoundError:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="session_not_found",
+        )
+        return _build_error_response(
+            status_code=404,
+            code="session_not_found",
+            message="Unable to find the requested session.",
+            trace_id=trace_id,
+        )
+    except StudentSubmissionNotFoundError:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="student_submission_not_found",
+        )
+        return _build_error_response(
+            status_code=404,
+            code="student_submission_not_found",
+            message="Unable to find the student's submission for the requested session.",
+            trace_id=trace_id,
+        )
+    except AmbiguousStudentSubmissionError:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="student_submission_ambiguous",
+        )
+        return _build_error_response(
+            status_code=500,
+            code="student_submission_ambiguous",
+            message="Unable to resolve a unique student submission for the requested session.",
+            trace_id=trace_id,
+        )
+    except sqlite3.Error:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="concept_grading_context_query_failed",
+        )
+        return _build_error_response(
+            status_code=500,
+            code="concept_grading_context_query_failed",
+            message="Unable to fetch the student and session data required for concept grading.",
+            trace_id=trace_id,
+        )
+    except ProjectEvidenceCollectionError as exc:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason=exc.code,
+        )
+        return _build_error_response(
+            status_code=500,
+            code=exc.code,
+            message=exc.message,
+            trace_id=trace_id,
+        )
+    except StructuredExtractionError as exc:
+        response_code = exc.code
+        response_message = exc.message
+        if exc.code in {"structured_extraction_failed", "no_provider_available"}:
+            response_code = "concept_grading_provider_failed"
+            response_message = (
+                "Unable to grade the requested concepts with the configured providers."
+            )
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            provider_name=exc.provider_name,
+            model_name=exc.model_name,
+            validation_status="failed",
+            retry_count=exc.retry_count,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason=response_code,
+        )
+        return _build_error_response(
+            status_code=500,
+            code=response_code,
+            message=response_message,
+            trace_id=trace_id,
+        )
+
+    try:
+        save_student_concept_grade_json(
+            database_path=get_database_path(),
+            session_id=grading_context.session_id,
+            assignment_requirement_id=grading_context.assignment_requirement_id,
+            student_id=grading_context.student_id,
+            concept_grade_response=extraction_result.response,
+            trace_id=trace_id,
+        )
+    except sqlite3.Error:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            provider_name=extraction_result.provider_name,
+            model_name=extraction_result.model_name,
+            validation_status="failed",
+            retry_count=extraction_result.retry_count,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="concept_grading_persistence_failed",
+        )
+        return _build_error_response(
+            status_code=500,
+            code="concept_grading_persistence_failed",
+            message="Unable to save concept grading for the student submission.",
+            trace_id=trace_id,
+        )
+
+    request_telemetry.emit(
+        step_suffix="concept_grade_persisted",
+        provider_name=extraction_result.provider_name,
+        model_name=extraction_result.model_name,
+        validation_status="passed",
+        retry_count=extraction_result.retry_count,
+    )
+
+    request_telemetry.emit(
+        step_suffix="request_completed",
+        provider_name=extraction_result.provider_name,
+        model_name=extraction_result.model_name,
+        validation_status="passed",
+        retry_count=extraction_result.retry_count,
+        elapsed_ms=_elapsed_ms(start_time),
+    )
+    return extraction_result.response
 
 
 @app.get(

@@ -12,7 +12,9 @@ from fastapi.testclient import TestClient
 import app.assignment_requirement_extraction_spec as assignment_requirement_extraction_spec
 import app.assignment_requirement_provider as assignment_requirement_provider
 import app.concept_extraction_spec as concept_extraction_spec
+import app.concept_grading_provider as concept_grading_provider
 import app.concept_provider as concept_provider
+import app.main as main_module
 import app.provider_router as provider_router
 from app.logging_config import configure_logging
 from app.main import app
@@ -133,11 +135,12 @@ def _build_test_database(database_path: Path) -> None:
                 session_content_id,
                 assignment_title,
                 assignment_description,
+                assignment_requirements_json,
                 required_deliverables_json,
                 rubric_json,
                 due_at,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -145,6 +148,7 @@ def _build_test_database(database_path: Path) -> None:
                     "session-older",
                     "Agent Basics Project",
                     "Build a basic agent loop.",
+                    json.dumps([]),
                     json.dumps(["README", "demo"]),
                     json.dumps({"correctness": 5, "clarity": 5}),
                     "2026-05-20T23:59:59+05:30",
@@ -155,6 +159,7 @@ def _build_test_database(database_path: Path) -> None:
                     "session-newer",
                     "MCP Integration Project",
                     "Wire an MCP-backed workflow.",
+                    json.dumps([]),
                     json.dumps(["repo", "tests"]),
                     json.dumps({"tooling": 5, "architecture": 5}),
                     "2026-05-21T23:59:59+05:30",
@@ -165,6 +170,7 @@ def _build_test_database(database_path: Path) -> None:
                     "session-newer",
                     "Capstone Demo",
                     "Submit a full review pilot walkthrough.",
+                    json.dumps([]),
                     json.dumps(["repo", "video"]),
                     json.dumps({"delivery": 5, "observability": 5}),
                     "2026-05-22T23:59:59+05:30",
@@ -175,6 +181,7 @@ def _build_test_database(database_path: Path) -> None:
                     "session-empty",
                     "Telemetry Drill",
                     "Submit tracing notes.",
+                    json.dumps([]),
                     json.dumps(["notes"]),
                     json.dumps({"coverage": 10}),
                     "2026-05-23T23:59:59+05:30",
@@ -243,6 +250,60 @@ def _build_test_database(database_path: Path) -> None:
         connection.commit()
     finally:
         connection.close()
+
+
+def _build_test_project_folder(project_root: Path) -> Path:
+    """Create a bounded local project used for concept grading tests."""
+    project_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "README.md").write_text(
+        "\n".join(
+            [
+                "# Binary Search Project",
+                "README explains O(log n) search complexity.",
+                "The implementation favors binary search over linear scan.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (project_root / "src").mkdir(exist_ok=True)
+    (project_root / "src" / "search.py").write_text(
+        "\n".join(
+            [
+                "def binary_search(items, target):",
+                "    left = 0",
+                "    right = len(items) - 1",
+                "    while left <= right:",
+                "        midpoint = (left + right) // 2",
+                "        if items[midpoint] == target:",
+                "            return midpoint",
+                "        if items[midpoint] < target:",
+                "            left = midpoint + 1",
+                "        else:",
+                "            right = midpoint - 1",
+                "    return -1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (project_root / "tests").mkdir(exist_ok=True)
+    (project_root / "tests" / "test_search.py").write_text(
+        "\n".join(
+            [
+                "from src.search import binary_search",
+                "",
+                "def test_binary_search_handles_empty_list():",
+                "    assert binary_search([], 3) == -1",
+                "",
+                "def test_binary_search_finds_single_item():",
+                "    assert binary_search([7], 7) == 0",
+                "",
+                "def test_binary_search_handles_missing_target():",
+                "    assert binary_search([1, 2, 3], 4) == -1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return project_root
 
 
 class _RecordingStructuredExtractionProvider:
@@ -490,6 +551,59 @@ def test_extract_session_concepts_returns_concepts_from_transcript(
     assert "MCP tool registration connects tools to the runtime." in (
         provider_request.session_transcript or ""
     )
+
+
+def test_extract_session_concepts_persists_concepts_json(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Successful concept extraction should update session_content.concepts_json."""
+    database_path = tmp_path / "reviewpilot.db"
+    _build_test_database(database_path)
+    provider = _RecordingStructuredExtractionProvider(
+        [
+            {
+                "concepts": [
+                    {
+                        "name": "Tool registration",
+                        "summary": "Explains how MCP tools are exposed to the runtime.",
+                        "grading_reason": "Students should be able to wire tools correctly.",
+                        "concept_importance": 9,
+                        "evidence": ["MCP tool registration connects tools to the runtime."],
+                    }
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        concept_provider,
+        "select_concept_extraction_provider",
+        lambda: provider,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/sessions/session-newer/extract-concepts",
+        headers={"X-Trace-Id": "trace-extract-persist"},
+    )
+
+    assert response.status_code == 200
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            """
+            SELECT concepts_json
+            FROM session_content
+            WHERE id = ?
+            """,
+            ("session-newer",),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert row is not None
+    assert json.loads(row[0]) == response.json()["concepts"]
 
 
 def test_extract_session_concepts_accepts_plain_text_transcript(
@@ -992,6 +1106,9 @@ def test_extract_session_concepts_emits_structured_telemetry(
         "extract_session_concepts.provider_call_completed",
         "extract_session_concepts.schema_validation_passed",
         "extract_session_concepts.completed",
+        "save_session_concepts_json.query_started",
+        "save_session_concepts_json.query_completed",
+        "extract_session_concepts.concepts_persisted",
         "extract_session_concepts.request_completed",
     ]
     assert all(event["trace_id"] == "trace-extract-telemetry" for event in telemetry_events)
@@ -1033,8 +1150,11 @@ def test_extract_session_concepts_emits_structured_telemetry(
     assert telemetry_events[7]["provider_name"] == "test-provider"
     assert telemetry_events[7]["model_name"] == "test-model"
     assert telemetry_events[10]["validation_status"] == "passed"
-    assert telemetry_events[12]["provider_name"] == "test-provider"
-    assert telemetry_events[12]["model_name"] == "test-model"
+    assert telemetry_events[13]["details"] == {"concept_count": 1}
+    assert telemetry_events[14]["provider_name"] == "test-provider"
+    assert telemetry_events[14]["model_name"] == "test-model"
+    assert telemetry_events[15]["provider_name"] == "test-provider"
+    assert telemetry_events[15]["model_name"] == "test-model"
 
 
 def test_extract_session_concepts_emits_repair_telemetry(
@@ -1097,6 +1217,9 @@ def test_extract_session_concepts_emits_repair_telemetry(
         "extract_session_concepts.schema_validation_passed",
         "extract_session_concepts.repair_completed",
         "extract_session_concepts.completed",
+        "save_session_concepts_json.query_started",
+        "save_session_concepts_json.query_completed",
+        "extract_session_concepts.concepts_persisted",
         "extract_session_concepts.request_completed",
     ]
     assert telemetry_events[9]["validation_status"] == "failed"
@@ -1108,7 +1231,59 @@ def test_extract_session_concepts_emits_repair_telemetry(
     assert telemetry_events[13]["retry_count"] == 1
     assert telemetry_events[14]["validation_status"] == "passed"
     assert telemetry_events[14]["retry_count"] == 1
-    assert telemetry_events[16]["retry_count"] == 1
+
+
+def test_extract_session_concepts_returns_structured_error_when_persistence_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Persistence failures should return a structured 500 response."""
+    database_path = tmp_path / "reviewpilot.db"
+    _build_test_database(database_path)
+    provider = _RecordingStructuredExtractionProvider(
+        [
+            {
+                "concepts": [
+                    {
+                        "name": "Tool registration",
+                        "summary": "Explains how MCP tools are exposed to the runtime.",
+                        "grading_reason": "Students should be able to wire tools correctly.",
+                        "concept_importance": 9,
+                        "evidence": ["MCP tool registration connects tools to the runtime."],
+                    }
+                ]
+            }
+        ]
+    )
+
+    def _raise_persistence_failure(**kwargs) -> None:
+        """Simulate a database write failure during concept persistence."""
+        del kwargs
+        raise sqlite3.Error("write failed")
+
+    monkeypatch.setattr(
+        concept_provider,
+        "select_concept_extraction_provider",
+        lambda: provider,
+    )
+    monkeypatch.setattr(main_module, "save_session_concepts_json", _raise_persistence_failure)
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    configure_logging(force=True)
+    client = TestClient(app)
+
+    response = client.post(
+        "/sessions/session-newer/extract-concepts",
+        headers={"X-Trace-Id": "trace-extract-persist-failure"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {
+            "code": "session_concepts_persistence_failed",
+            "message": "Unable to save extracted concepts for the session.",
+            "trace_id": "trace-extract-persist-failure",
+        }
+    }
 
 
 def test_extract_session_concepts_falls_back_when_primary_provider_is_invalid(
@@ -1415,6 +1590,79 @@ def test_extract_session_assignment_requirements_returns_extracted_requirements(
     assert "Wire an MCP-backed workflow." in provider_request.prompt_input_fields[1].value
 
 
+def test_extract_session_assignment_requirements_persists_assignment_requirements_json(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Successful assignment extraction should update assignment_requirement rows."""
+    database_path = tmp_path / "reviewpilot.db"
+    _build_test_database(database_path)
+    provider = _RecordingStructuredExtractionProvider(
+        [
+            {
+                "assignment_requirements": [
+                    {
+                        "assignment_requirement_id": "assignment-mcp",
+                        "assignment_title": "MCP Integration Project",
+                        "requirements": [
+                            {
+                                "requirement_type": "mandatory_deliverable",
+                                "title": "MCP-backed workflow",
+                                "summary": "Students must build the MCP-based workflow.",
+                                "evidence": ["Wire an MCP-backed workflow."],
+                            }
+                        ],
+                    },
+                    {
+                        "assignment_requirement_id": "assignment-capstone",
+                        "assignment_title": "Capstone Demo",
+                        "requirements": [
+                            {
+                                "requirement_type": "mandatory_deliverable",
+                                "title": "Review pilot walkthrough",
+                                "summary": "Students must submit the full walkthrough.",
+                                "evidence": ["Submit a full review pilot walkthrough."],
+                            }
+                        ],
+                    },
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        assignment_requirement_provider,
+        "select_assignment_requirement_extraction_provider",
+        lambda: provider,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/sessions/session-newer/extract-assignment-requirements",
+        headers={"X-Trace-Id": "trace-assignment-persist"},
+    )
+
+    assert response.status_code == 200
+    connection = sqlite3.connect(database_path)
+    try:
+        rows = connection.execute(
+            """
+            SELECT id, assignment_requirements_json
+            FROM assignment_requirement
+            WHERE session_content_id = ?
+            ORDER BY id ASC
+            """,
+            ("session-newer",),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert {row[0]: json.loads(row[1]) for row in rows} == {
+        "assignment-capstone": response.json()["assignment_requirements"][1]["requirements"],
+        "assignment-mcp": response.json()["assignment_requirements"][0]["requirements"],
+    }
+
+
 def test_extract_session_assignment_requirements_returns_warning_when_none_are_stored(
     monkeypatch,
     tmp_path: Path,
@@ -1569,10 +1817,70 @@ def test_extract_session_assignment_requirements_returns_structured_error_for_mi
     assert response.json() == {
         "error": {
             "code": "assignment_requirement_extraction_source_query_failed",
-            "message": (
-                "Unable to fetch the assignment data required for requirement extraction."
-            ),
+            "message": ("Unable to fetch the assignment data required for requirement extraction."),
             "trace_id": "trace-assignment-query-failure",
+        }
+    }
+
+
+def test_extract_session_assignment_requirements_returns_structured_error_when_persistence_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Persistence failures should return a structured 500 response."""
+    database_path = tmp_path / "reviewpilot.db"
+    _build_test_database(database_path)
+    provider = _RecordingStructuredExtractionProvider(
+        [
+            {
+                "assignment_requirements": [
+                    {
+                        "assignment_requirement_id": "assignment-empty",
+                        "assignment_title": "Telemetry Drill",
+                        "requirements": [
+                            {
+                                "requirement_type": "mandatory_deliverable",
+                                "title": "Tracing notes",
+                                "summary": "Students must submit tracing notes.",
+                                "evidence": ["Submit tracing notes."],
+                            }
+                        ],
+                    }
+                ]
+            }
+        ]
+    )
+
+    def _raise_persistence_failure(**kwargs) -> None:
+        """Simulate a database write failure during assignment persistence."""
+        del kwargs
+        raise sqlite3.Error("write failed")
+
+    monkeypatch.setattr(
+        assignment_requirement_provider,
+        "select_assignment_requirement_extraction_provider",
+        lambda: provider,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "save_assignment_requirement_requirements_json",
+        _raise_persistence_failure,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    configure_logging(force=True)
+    client = TestClient(app)
+
+    response = client.post(
+        "/sessions/session-empty/extract-assignment-requirements",
+        headers={"X-Trace-Id": "trace-assignment-persist-failure"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {
+            "code": "assignment_requirements_persistence_failed",
+            "message": "Unable to save extracted assignment requirements.",
+            "trace_id": "trace-assignment-persist-failure",
         }
     }
 
@@ -1634,6 +1942,9 @@ def test_extract_session_assignment_requirements_emits_structured_telemetry(
         "extract_session_assignment_requirements.provider_call_completed",
         "extract_session_assignment_requirements.schema_validation_passed",
         "extract_session_assignment_requirements.completed",
+        "save_assignment_requirement_requirements_json.query_started",
+        "save_assignment_requirement_requirements_json.query_completed",
+        "extract_session_assignment_requirements.assignment_requirements_persisted",
         "extract_session_assignment_requirements.request_completed",
     ]
     assert all(event["trace_id"] == "trace-assignment-telemetry" for event in telemetry_events)
@@ -1660,6 +1971,561 @@ def test_extract_session_assignment_requirements_emits_structured_telemetry(
     assert telemetry_events[7]["details"] == {
         "provider_reasoning_level": None,
         "provider_reasoning_type": None,
+    }
+    assert telemetry_events[12]["details"] == {"assignment_requirement_count": 1}
+
+
+def test_grade_submission_concepts_returns_scores_for_local_folder(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """POST /grade/concepts should return structured concept scores for a local project."""
+    database_path = tmp_path / "reviewpilot.db"
+    project_root = _build_test_project_folder(tmp_path / "student-project")
+    _build_test_database(database_path)
+    provider = _RecordingStructuredExtractionProvider(
+        [
+            {
+                "concept_scores": [
+                    {
+                        "concept": "time complexity",
+                        "score": 4,
+                        "max_score": 5,
+                        "coverage_level": "strong",
+                        "evidence": [
+                            "README explains O(log n) search complexity.",
+                            "Code implements binary search rather than linear scan.",
+                            "Tests cover empty, single-item, and missing-target cases.",
+                        ],
+                        "deductions": ["Space complexity is not discussed."],
+                    }
+                ]
+            }
+        ]
+    )
+
+    def _unexpected_primary_provider():
+        raise AssertionError(
+            "grade_submission_concepts should build the first provider from candidates."
+        )
+
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "select_concept_grading_provider",
+        _unexpected_primary_provider,
+    )
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "build_concept_grading_provider_candidates",
+        lambda: [provider_router.ProviderCandidate("anthropic", "claude-sonnet-4-6")],
+    )
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "build_concept_grading_provider",
+        lambda *, provider_name, model_name: provider,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/grade/concepts",
+        json={
+            "student_id": "student-ada",
+            "session_id": "session-newer",
+            "source_type": "local_folder",
+            "local_path": str(project_root),
+            "concepts": [
+                {
+                    "concept_name": "time complexity",
+                    "summary": "Evaluate how the project explains and implements complexity.",
+                    "grading_reason": (
+                        "Algorithmic efficiency is part of the session learning goals."
+                    ),
+                    "max_score": 5,
+                }
+            ],
+        },
+        headers={"X-Trace-Id": "trace-grade-concepts-success"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "student_id": "student-ada",
+        "student_code": "STU-001",
+        "student_full_name": "Ada Lovelace",
+        "session_id": "session-newer",
+        "source_type": "local_folder",
+        "repo_url": None,
+        "local_path": str(project_root),
+        "zip_path": None,
+        "concept_scores": [
+            {
+                "concept": "time complexity",
+                "score": 4,
+                "max_score": 5,
+                "coverage_level": "strong",
+                "evidence": [
+                    "README explains O(log n) search complexity.",
+                    "Code implements binary search rather than linear scan.",
+                    "Tests cover empty, single-item, and missing-target cases.",
+                ],
+                "deductions": ["Space complexity is not discussed."],
+            }
+        ],
+        "warnings": [],
+    }
+    provider_request, recorded_trace_id, repair_context = provider.requests[0]
+    assert recorded_trace_id == "trace-grade-concepts-success"
+    assert repair_context is None
+    assert provider_request.operation_name == "grade_submission_concepts"
+    assert provider_request.student_id == "student-ada"
+    assert provider_request.student_code == "STU-001"
+    assert provider_request.student_full_name == "Ada Lovelace"
+    assert provider_request.source_type == "local_folder"
+    assert provider_request.local_path == str(project_root)
+    assert provider_request.grading_concepts[0].concept_name == "time complexity"
+    assert (
+        "README explains O(log n) search complexity." in provider_request.project_evidence_summary
+    )
+    assert "test_binary_search_handles_empty_list" in provider_request.project_evidence_summary
+
+
+def test_grade_submission_concepts_persists_concept_grade_json(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Successful concept grading should upsert student_grades.concept_grade."""
+    database_path = tmp_path / "reviewpilot.db"
+    project_root = _build_test_project_folder(tmp_path / "student-project")
+    _build_test_database(database_path)
+    provider = _RecordingStructuredExtractionProvider(
+        [
+            {
+                "concept_scores": [
+                    {
+                        "concept": "time complexity",
+                        "score": 4,
+                        "max_score": 5,
+                        "coverage_level": "strong",
+                        "evidence": [
+                            "README explains O(log n) search complexity.",
+                            "Code implements binary search rather than linear scan.",
+                        ],
+                        "deductions": ["Space complexity is not discussed."],
+                    }
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "build_concept_grading_provider_candidates",
+        lambda: [provider_router.ProviderCandidate("anthropic", "claude-sonnet-4-6")],
+    )
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "build_concept_grading_provider",
+        lambda *, provider_name, model_name: provider,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/grade/concepts",
+        json={
+            "student_id": "student-ada",
+            "session_id": "session-newer",
+            "source_type": "local_folder",
+            "local_path": str(project_root),
+            "concepts": [
+                {
+                    "concept_name": "time complexity",
+                    "summary": "Evaluate how the project explains and implements complexity.",
+                    "grading_reason": (
+                        "Algorithmic efficiency is part of the session learning goals."
+                    ),
+                    "max_score": 5,
+                }
+            ],
+        },
+        headers={"X-Trace-Id": "trace-grade-concepts-persist"},
+    )
+
+    assert response.status_code == 200
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            """
+            SELECT concept_grade
+            FROM student_grades
+            WHERE session_content_id = ?
+              AND assignment_requirement_id = ?
+              AND student_id = ?
+            """,
+            ("session-newer", "assignment-mcp", "student-ada"),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert row is not None
+    assert json.loads(row[0]) == response.json()
+
+
+def test_grade_submission_concepts_falls_back_to_second_real_model(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Concept grading should retry on the next configured non-heuristic candidate."""
+    database_path = tmp_path / "reviewpilot.db"
+    project_root = _build_test_project_folder(tmp_path / "student-project")
+    _build_test_database(database_path)
+    fallback_provider = _RecordingStructuredExtractionProvider(
+        [
+            {
+                "concept_scores": [
+                    {
+                        "concept": "time complexity",
+                        "score": 5,
+                        "max_score": 5,
+                        "coverage_level": "strong",
+                        "evidence": ["README explains O(log n) search complexity."],
+                        "deductions": [],
+                    }
+                ]
+            }
+        ]
+    )
+
+    def _unexpected_primary_provider():
+        raise AssertionError(
+            "grade_submission_concepts should not use select_concept_grading_provider."
+        )
+
+    def _build_provider(*, provider_name: str, model_name: str):
+        if provider_name == "anthropic":
+            return _RaisingConceptProvider(
+                provider_name=provider_name,
+                model_name=model_name,
+                message="anthropic grading failure",
+            )
+        return fallback_provider
+
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "select_concept_grading_provider",
+        _unexpected_primary_provider,
+    )
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "build_concept_grading_provider_candidates",
+        lambda: [
+            provider_router.ProviderCandidate("anthropic", "claude-sonnet-4-6"),
+            provider_router.ProviderCandidate("gemini", "gemini-2.5-flash"),
+        ],
+    )
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "build_concept_grading_provider",
+        _build_provider,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/grade/concepts",
+        json={
+            "student_id": "student-ada",
+            "session_id": "session-newer",
+            "source_type": "local_folder",
+            "local_path": str(project_root),
+            "concepts": [
+                {
+                    "concept_name": "time complexity",
+                    "summary": "Evaluate how the project explains and implements complexity.",
+                    "grading_reason": (
+                        "Algorithmic efficiency is part of the session learning goals."
+                    ),
+                    "max_score": 5,
+                }
+            ],
+        },
+        headers={"X-Trace-Id": "trace-grade-concepts-fallback"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["concept_scores"][0]["score"] == 5
+    assert len(fallback_provider.requests) == 1
+
+
+def test_grade_submission_concepts_returns_structured_error_when_all_models_fail(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Concept grading should return a structured error after all real models fail."""
+    database_path = tmp_path / "reviewpilot.db"
+    project_root = _build_test_project_folder(tmp_path / "student-project")
+    _build_test_database(database_path)
+
+    def _unexpected_primary_provider():
+        raise AssertionError(
+            "grade_submission_concepts should not use select_concept_grading_provider."
+        )
+
+    def _build_provider(*, provider_name: str, model_name: str):
+        return _RaisingConceptProvider(
+            provider_name=provider_name,
+            model_name=model_name,
+            message=f"{provider_name} grading failure",
+        )
+
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "select_concept_grading_provider",
+        _unexpected_primary_provider,
+    )
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "build_concept_grading_provider_candidates",
+        lambda: [
+            provider_router.ProviderCandidate("anthropic", "claude-sonnet-4-6"),
+            provider_router.ProviderCandidate("gemini", "gemini-2.5-flash"),
+        ],
+    )
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "build_concept_grading_provider",
+        _build_provider,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/grade/concepts",
+        json={
+            "student_id": "student-ada",
+            "session_id": "session-newer",
+            "source_type": "local_folder",
+            "local_path": str(project_root),
+            "concepts": [
+                {
+                    "concept_name": "time complexity",
+                    "summary": "Evaluate how the project explains and implements complexity.",
+                    "grading_reason": (
+                        "Algorithmic efficiency is part of the session learning goals."
+                    ),
+                    "max_score": 5,
+                }
+            ],
+        },
+        headers={"X-Trace-Id": "trace-grade-concepts-provider-failure"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {
+            "code": "concept_grading_provider_failed",
+            "message": "Unable to grade the requested concepts with the configured providers.",
+            "trace_id": "trace-grade-concepts-provider-failure",
+        }
+    }
+
+
+def test_grade_submission_concepts_returns_structured_error_when_persistence_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Concept grading should return a structured error when persistence fails."""
+    database_path = tmp_path / "reviewpilot.db"
+    project_root = _build_test_project_folder(tmp_path / "student-project")
+    _build_test_database(database_path)
+    provider = _RecordingStructuredExtractionProvider(
+        [
+            {
+                "concept_scores": [
+                    {
+                        "concept": "time complexity",
+                        "score": 4,
+                        "max_score": 5,
+                        "coverage_level": "strong",
+                        "evidence": ["README explains O(log n) search complexity."],
+                        "deductions": ["Space complexity is not discussed."],
+                    }
+                ]
+            }
+        ]
+    )
+
+    def _raise_persistence_failure(**kwargs) -> None:
+        """Simulate a database write failure during concept-grade persistence."""
+        del kwargs
+        raise sqlite3.Error("write failed")
+
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "build_concept_grading_provider_candidates",
+        lambda: [provider_router.ProviderCandidate("anthropic", "claude-sonnet-4-6")],
+    )
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "build_concept_grading_provider",
+        lambda *, provider_name, model_name: provider,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "save_student_concept_grade_json",
+        _raise_persistence_failure,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/grade/concepts",
+        json={
+            "student_id": "student-ada",
+            "session_id": "session-newer",
+            "source_type": "local_folder",
+            "local_path": str(project_root),
+            "concepts": [
+                {
+                    "concept_name": "time complexity",
+                    "summary": "Evaluate how the project explains and implements complexity.",
+                    "grading_reason": (
+                        "Algorithmic efficiency is part of the session learning goals."
+                    ),
+                    "max_score": 5,
+                }
+            ],
+        },
+        headers={"X-Trace-Id": "trace-grade-concepts-persist-failure"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {
+            "code": "concept_grading_persistence_failed",
+            "message": "Unable to save concept grading for the student submission.",
+            "trace_id": "trace-grade-concepts-persist-failure",
+        }
+    }
+
+
+def test_grade_submission_concepts_emits_structured_telemetry(
+    monkeypatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Concept grading should emit the expected structured workflow telemetry."""
+    database_path = tmp_path / "reviewpilot.db"
+    project_root = _build_test_project_folder(tmp_path / "student-project")
+    _build_test_database(database_path)
+    provider = _RecordingStructuredExtractionProvider(
+        [
+            {
+                "concept_scores": [
+                    {
+                        "concept": "time complexity",
+                        "score": 4,
+                        "max_score": 5,
+                        "coverage_level": "strong",
+                        "evidence": ["README explains O(log n) search complexity."],
+                        "deductions": ["Space complexity is not discussed."],
+                    }
+                ]
+            }
+        ]
+    )
+
+    def _unexpected_primary_provider():
+        raise AssertionError(
+            "grade_submission_concepts should not use select_concept_grading_provider."
+        )
+
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "select_concept_grading_provider",
+        _unexpected_primary_provider,
+    )
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "build_concept_grading_provider_candidates",
+        lambda: [provider_router.ProviderCandidate("anthropic", "claude-sonnet-4-6")],
+    )
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "build_concept_grading_provider",
+        lambda *, provider_name, model_name: provider,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    configure_logging(force=True)
+    client = TestClient(app)
+
+    response = client.post(
+        "/grade/concepts",
+        json={
+            "student_id": "student-ada",
+            "session_id": "session-newer",
+            "source_type": "local_folder",
+            "local_path": str(project_root),
+            "concepts": [
+                {
+                    "concept_name": "time complexity",
+                    "summary": "Evaluate how the project explains and implements complexity.",
+                    "grading_reason": (
+                        "Algorithmic efficiency is part of the session learning goals."
+                    ),
+                    "max_score": 5,
+                }
+            ],
+        },
+        headers={"X-Trace-Id": "trace-grade-concepts-telemetry"},
+    )
+
+    assert response.status_code == 200
+    stdout = capsys.readouterr().out.strip().splitlines()
+    telemetry_events = [json.loads(line) for line in stdout if line.startswith("{")]
+    assert [event["step_name"] for event in telemetry_events] == [
+        "grade_submission_concepts.request_received",
+        "get_concept_grading_context.query_started",
+        "get_concept_grading_context.query_completed",
+        "grade_submission_concepts.grading_context_fetched",
+        "grade_submission_concepts.project_evidence_collection_started",
+        "grade_submission_concepts.project_evidence_collected",
+        "grade_submission_concepts.canonical_request_built",
+        "grade_submission_concepts.provider_selection_started",
+        "grade_submission_concepts.provider_selection_completed",
+        "grade_submission_concepts.provider_call_started",
+        "grade_submission_concepts.provider_call_completed",
+        "grade_submission_concepts.schema_validation_passed",
+        "grade_submission_concepts.completed",
+        "save_student_concept_grade_json.query_started",
+        "save_student_concept_grade_json.query_completed",
+        "grade_submission_concepts.concept_grade_persisted",
+        "grade_submission_concepts.request_completed",
+    ]
+    assert telemetry_events[5]["details"]["project_file_count"] >= 3
+    assert telemetry_events[6]["details"] == {
+        "session_id": "session-newer",
+        "student_id": "student-ada",
+        "operation_name": "grade_submission_concepts",
+        "reasoning_level": "medium",
+        "reasoning_type": "project_grading",
+        "output_mode": concept_grading_provider.DEFAULT_OUTPUT_MODE,
+        "concept_count": 1,
+        "response_schema_title": "ConceptGradingOutput",
+        "source_type": "local_folder",
+        "project_file_count": 3,
+        "documentation_snippet_count": 1,
+        "implementation_snippet_count": 1,
+        "test_snippet_count": 1,
+    }
+    assert telemetry_events[9]["details"] == {
+        "provider_reasoning_level": None,
+        "provider_reasoning_type": None,
+    }
+    assert telemetry_events[14]["details"] == {
+        "student_id": "student-ada",
+        "assignment_requirement_id": "assignment-mcp",
+        "concept_score_count": 1,
     }
 
 
