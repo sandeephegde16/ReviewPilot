@@ -4,16 +4,25 @@ from __future__ import annotations
 
 import sqlite3
 from time import perf_counter
+from typing import Annotated
 from uuid import uuid4
 
-from fastapi import FastAPI, Header
+from fastapi import Body, FastAPI, Header
 from fastapi.responses import JSONResponse
 
+from app.concept_orchestrator import (
+    DEFAULT_REASONING_TYPE,
+    DEFAULT_TOOL_NAME,
+    ConceptExtractionError,
+    extract_concepts_for_session,
+)
 from app.config import get_database_path
 from app.logging_config import configure_logging
 from app.schemas import (
     ApiError,
     ApiErrorResponse,
+    ExtractConceptsRequest,
+    ExtractConceptsResponse,
     SessionSubmission,
     SessionSummary,
     StudentSubmission,
@@ -21,6 +30,7 @@ from app.schemas import (
 from app.session_store import (
     SessionNotFoundError,
     StudentNotFoundError,
+    get_session_extraction_source,
     list_session_submissions,
     list_session_summaries,
     list_student_submissions,
@@ -36,6 +46,158 @@ app = FastAPI(title="ReviewPilot", version="0.1.0")
 def health() -> dict[str, str]:
     """Return a simple health response for the API."""
     return {"status": "ok"}
+
+
+@app.post(
+    "/sessions/{session_id}/extract-concepts",
+    response_model=ExtractConceptsResponse,
+    responses={404: {"model": ApiErrorResponse}, 500: {"model": ApiErrorResponse}},
+    tags=["sessions"],
+)
+def extract_session_concepts(
+    session_id: str,
+    request: Annotated[ExtractConceptsRequest | None, Body()] = None,
+    x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
+) -> ExtractConceptsResponse | JSONResponse:
+    """Extract gradeable concepts for a session using normalized session evidence."""
+    trace_id = x_trace_id or uuid4().hex
+    extraction_request = request or ExtractConceptsRequest()
+    start_time = perf_counter()
+    emit_event(
+        trace_id=trace_id,
+        review_id=None,
+        session_id=session_id,
+        step_name="extract_session_concepts.request_received",
+        tool_name=DEFAULT_TOOL_NAME,
+        data_store="sqlite",
+        provider_name=None,
+        model_name=None,
+        reasoning_level=extraction_request.reasoning_level,
+        reasoning_type=DEFAULT_REASONING_TYPE,
+        validation_status="pending",
+        retry_count=0,
+    )
+    try:
+        session_source = get_session_extraction_source(
+            database_path=get_database_path(),
+            session_id=session_id,
+            trace_id=trace_id,
+        )
+        emit_event(
+            trace_id=trace_id,
+            review_id=None,
+            session_id=session_source.id,
+            step_name="extract_session_concepts.session_fetched",
+            tool_name=DEFAULT_TOOL_NAME,
+            data_store="sqlite",
+            provider_name=None,
+            model_name=None,
+            reasoning_level=extraction_request.reasoning_level,
+            reasoning_type=DEFAULT_REASONING_TYPE,
+            validation_status="passed",
+            retry_count=0,
+        )
+        extraction_result = extract_concepts_for_session(
+            session_source=session_source,
+            reasoning_level=extraction_request.reasoning_level,
+            trace_id=trace_id,
+        )
+    except SessionNotFoundError:
+        elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+        emit_event(
+            trace_id=trace_id,
+            review_id=None,
+            session_id=session_id,
+            step_name="extract_session_concepts.request_failed",
+            tool_name=DEFAULT_TOOL_NAME,
+            data_store="sqlite",
+            provider_name=None,
+            model_name=None,
+            reasoning_level=extraction_request.reasoning_level,
+            reasoning_type=DEFAULT_REASONING_TYPE,
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=elapsed_ms,
+            failure_reason="session_not_found",
+        )
+        error_response = ApiErrorResponse(
+            error=ApiError(
+                code="session_not_found",
+                message="Unable to find the requested session.",
+                trace_id=trace_id,
+            )
+        )
+        return JSONResponse(status_code=404, content=error_response.model_dump())
+    except sqlite3.Error:
+        elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+        emit_event(
+            trace_id=trace_id,
+            review_id=None,
+            session_id=session_id,
+            step_name="extract_session_concepts.request_failed",
+            tool_name=DEFAULT_TOOL_NAME,
+            data_store="sqlite",
+            provider_name=None,
+            model_name=None,
+            reasoning_level=extraction_request.reasoning_level,
+            reasoning_type=DEFAULT_REASONING_TYPE,
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=elapsed_ms,
+            failure_reason="session_extraction_source_query_failed",
+        )
+        error_response = ApiErrorResponse(
+            error=ApiError(
+                code="session_extraction_source_query_failed",
+                message="Unable to fetch the session data required for concept extraction.",
+                trace_id=trace_id,
+            )
+        )
+        return JSONResponse(status_code=500, content=error_response.model_dump())
+    except ConceptExtractionError as exc:
+        elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+        emit_event(
+            trace_id=trace_id,
+            review_id=None,
+            session_id=session_id,
+            step_name="extract_session_concepts.request_failed",
+            tool_name=DEFAULT_TOOL_NAME,
+            data_store="sqlite",
+            provider_name=exc.provider_name,
+            model_name=exc.model_name,
+            reasoning_level=extraction_request.reasoning_level,
+            reasoning_type=DEFAULT_REASONING_TYPE,
+            validation_status="failed",
+            retry_count=exc.retry_count,
+            elapsed_ms=elapsed_ms,
+            failure_reason=exc.code,
+        )
+        error_response = ApiErrorResponse(
+            error=ApiError(
+                code=exc.code,
+                message=exc.message,
+                trace_id=trace_id,
+            )
+        )
+        return JSONResponse(status_code=500, content=error_response.model_dump())
+
+    elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+    emit_event(
+        trace_id=trace_id,
+        review_id=None,
+        session_id=session_id,
+        step_name="extract_session_concepts.request_completed",
+        tool_name=DEFAULT_TOOL_NAME,
+        data_store="sqlite",
+        provider_name=extraction_result.provider_name,
+        model_name=extraction_result.model_name,
+        reasoning_level=extraction_request.reasoning_level,
+        reasoning_type=DEFAULT_REASONING_TYPE,
+        validation_status="passed",
+        retry_count=extraction_result.retry_count,
+        elapsed_ms=elapsed_ms,
+    )
+    return extraction_result.response
 
 
 @app.get(
