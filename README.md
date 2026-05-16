@@ -4,7 +4,7 @@ ReviewPilot is an early bootstrap for an assignment review agent. The current re
 
 ## What is here now
 
-- `app/main.py`: FastAPI app with `GET /health`, `GET /allsessions`, `POST /sessions/{session_id}/extract-concepts`, `GET /sessions/{session_id}/submissions`, and `GET /students/{student_id}/submissions`
+- `app/main.py`: FastAPI app with `GET /health`, `GET /allsessions`, `POST /sessions/{session_id}/extract-concepts`, `POST /sessions/{session_id}/extract-assignment-requirements`, `GET /sessions/{session_id}/submissions`, and `GET /students/{student_id}/submissions`
 - `db/schema.sql`: SQLite schema for students, session content, assignment requirements, and submissions
 - `openapi/reviewpilot.openapi.yaml`: OpenAPI contract for the current HTTP endpoints
 - `DESIGN_SPEC.md`: target architecture and planned review flow
@@ -30,14 +30,19 @@ The app starts on `http://127.0.0.1:8000`. Available endpoints:
 - `GET /health`
 - `GET /allsessions`
 - `POST /sessions/{session_id}/extract-concepts`
+- `POST /sessions/{session_id}/extract-assignment-requirements`
 - `GET /sessions/{session_id}/submissions`
 - `GET /students/{student_id}/submissions`
 
 Session API telemetry is emitted as one JSON log line per event to server stdout.
 
-## Concept extraction providers
+## Structured extraction providers
 
-`POST /sessions/{session_id}/extract-concepts` now supports three provider modes:
+`POST /sessions/{session_id}/extract-concepts` and
+`POST /sessions/{session_id}/extract-assignment-requirements`
+now share the same provider routing, schema validation, and repair flow.
+
+Available provider modes:
 
 - `anthropic` (default primary): real Claude API call using forced tool output with the canonical schema
 - `gemini` (default secondary): real Gemini API call using structured JSON schema output

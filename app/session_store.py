@@ -7,6 +7,7 @@ from pathlib import Path
 from time import perf_counter
 
 from app.schemas import (
+    AssignmentRequirementExtractionSource,
     SessionExtractionSource,
     SessionSubmission,
     SessionSummary,
@@ -171,6 +172,104 @@ def get_session_extraction_source(
         elapsed_ms=elapsed_ms,
     )
     return extraction_source
+
+
+def list_session_assignment_requirement_sources(
+    *,
+    database_path: Path,
+    session_id: str,
+    trace_id: str,
+    review_id: str | None = None,
+) -> list[AssignmentRequirementExtractionSource]:
+    """Fetch assignment requirement rows linked to one session."""
+    start_time = perf_counter()
+    emit_event(
+        trace_id=trace_id,
+        review_id=review_id,
+        session_id=session_id,
+        step_name="list_session_assignment_requirement_sources.query_started",
+        tool_name=None,
+        data_store="sqlite",
+        provider_name=None,
+        validation_status="pending",
+        retry_count=0,
+    )
+    connection = sqlite3.connect(_build_read_only_uri(database_path), uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        session_exists = connection.execute(
+            """
+            SELECT 1
+            FROM session_content
+            WHERE id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if session_exists is None:
+            elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+            emit_event(
+                trace_id=trace_id,
+                review_id=review_id,
+                session_id=session_id,
+                step_name="list_session_assignment_requirement_sources.session_not_found",
+                tool_name=None,
+                data_store="sqlite",
+                provider_name=None,
+                validation_status="failed",
+                retry_count=0,
+                elapsed_ms=elapsed_ms,
+                failure_reason="session_not_found",
+            )
+            raise SessionNotFoundError(session_id)
+
+        rows = connection.execute(
+            """
+            SELECT
+              assignment_requirement.id AS assignment_requirement_id,
+              assignment_requirement.assignment_title AS assignment_title,
+              assignment_requirement.assignment_description AS assignment_description
+            FROM assignment_requirement
+            WHERE assignment_requirement.session_content_id = ?
+            ORDER BY assignment_requirement.created_at ASC, assignment_requirement.id ASC
+            """,
+            (session_id,),
+        ).fetchall()
+    except sqlite3.Error as exc:
+        elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+        emit_event(
+            trace_id=trace_id,
+            review_id=review_id,
+            session_id=session_id,
+            step_name="list_session_assignment_requirement_sources.query_failed",
+            tool_name=None,
+            data_store="sqlite",
+            provider_name=None,
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=elapsed_ms,
+            failure_reason=str(exc),
+        )
+        raise
+    finally:
+        connection.close()
+
+    assignment_sources = [
+        AssignmentRequirementExtractionSource.model_validate(dict(row)) for row in rows
+    ]
+    elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+    emit_event(
+        trace_id=trace_id,
+        review_id=review_id,
+        session_id=session_id,
+        step_name="list_session_assignment_requirement_sources.query_completed",
+        tool_name=None,
+        data_store="sqlite",
+        provider_name=None,
+        validation_status="passed",
+        retry_count=0,
+        elapsed_ms=elapsed_ms,
+    )
+    return assignment_sources
 
 
 def list_session_submissions(

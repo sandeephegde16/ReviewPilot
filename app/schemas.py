@@ -1,5 +1,7 @@
 """Pydantic schemas used by the ReviewPilot API."""
 
+from __future__ import annotations
+
 from copy import deepcopy
 from functools import lru_cache
 from typing import Any, Literal
@@ -25,6 +27,16 @@ class SessionExtractionSource(BaseModel):
     session_transcript: str | None = Field(
         default=None,
         description="Raw transcript payload stored for the session.",
+    )
+
+
+class AssignmentRequirementExtractionSource(BaseModel):
+    """Internal model for assignment rows used during requirement extraction."""
+
+    assignment_requirement_id: str = Field(description="Unique identifier for the assignment.")
+    assignment_title: str = Field(description="Stored title for the assignment.")
+    assignment_description: str = Field(
+        description="Stored description used to extract assignment requirements."
     )
 
 
@@ -79,9 +91,21 @@ def _build_cached_concept_extraction_output_schema() -> dict[str, Any]:
     return _inline_local_json_schema_refs(ConceptExtractionOutput.model_json_schema())
 
 
-def get_concept_extraction_output_schema() -> dict[str, Any]:
-    """Return a copy of the concept extraction output schema for provider requests."""
-    return deepcopy(_build_cached_concept_extraction_output_schema())
+def get_concept_extraction_output_schema(*, max_concepts: int | None = None) -> dict[str, Any]:
+    """Return a provider schema for concept extraction with an optional output cap."""
+    schema = deepcopy(_build_cached_concept_extraction_output_schema())
+    if max_concepts is not None:
+        schema["properties"]["concepts"]["maxItems"] = max_concepts
+    return schema
+
+
+class ExtractAssignmentRequirementsRequest(BaseModel):
+    """Public request payload for assignment requirement extraction."""
+
+    reasoning_level: ReasoningLevel = Field(
+        default="medium",
+        description="Requested reasoning depth for assignment requirement extraction.",
+    )
 
 
 def _inline_local_json_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
@@ -131,6 +155,84 @@ class ExtractConceptsResponse(BaseModel):
     concepts: list[GradeableConcept] = Field(
         description="Gradeable concepts extracted from the session.",
         min_length=1,
+    )
+    warnings: list[ApiWarning] = Field(
+        default_factory=list,
+        description="Warnings describing any fallback behavior during extraction.",
+    )
+
+
+AssignmentRequirementType = Literal[
+    "mandatory_deliverable",
+    "forbidden_project_type",
+    "scoring_criterion",
+    "evidence_expectation",
+]
+
+
+class ExtractedAssignmentRequirement(BaseModel):
+    """One evidence-backed assignment requirement extracted from assignment text."""
+
+    requirement_type: AssignmentRequirementType = Field(
+        description="Canonical category for the extracted assignment requirement."
+    )
+    title: str = Field(description="Short label for the extracted assignment requirement.")
+    summary: str = Field(description="Brief explanation of the requirement.")
+    evidence: list[str] = Field(
+        description="Assignment title or description evidence supporting the requirement.",
+        min_length=1,
+    )
+
+
+class AssignmentRequirementExtractionResult(BaseModel):
+    """Extracted requirements for one assignment row in the session."""
+
+    assignment_requirement_id: str = Field(
+        description="Unique identifier for the assignment requirement record."
+    )
+    assignment_title: str = Field(description="Stored title for the assignment.")
+    requirements: list[ExtractedAssignmentRequirement] = Field(
+        description="Extracted requirements for this assignment.",
+        min_length=1,
+    )
+
+
+class AssignmentRequirementsExtractionOutput(BaseModel):
+    """Validated structured output returned by the assignment extraction provider."""
+
+    assignment_requirements: list[AssignmentRequirementExtractionResult] = Field(
+        description="Assignment requirements extracted from stored assignment evidence.",
+        min_length=1,
+    )
+
+
+@lru_cache(maxsize=1)
+def _build_cached_assignment_requirements_extraction_output_schema() -> dict[str, Any]:
+    """Cache the JSON schema used for structured assignment requirement extraction."""
+    return _inline_local_json_schema_refs(
+        AssignmentRequirementsExtractionOutput.model_json_schema()
+    )
+
+
+def get_assignment_requirements_extraction_output_schema(
+    *,
+    max_assignment_requirements: int | None = None,
+) -> dict[str, Any]:
+    """Return a provider schema for assignment extraction with an optional item cap."""
+    schema = deepcopy(_build_cached_assignment_requirements_extraction_output_schema())
+    if max_assignment_requirements is not None:
+        schema["properties"]["assignment_requirements"]["items"]["properties"]["requirements"][
+            "maxItems"
+        ] = max_assignment_requirements
+    return schema
+
+
+class ExtractAssignmentRequirementsResponse(BaseModel):
+    """Public response payload for extracted session assignment requirements."""
+
+    session_id: str = Field(description="Unique identifier for the session.")
+    assignment_requirements: list[AssignmentRequirementExtractionResult] = Field(
+        description="Assignment requirements extracted from stored assignment evidence."
     )
     warnings: list[ApiWarning] = Field(
         default_factory=list,

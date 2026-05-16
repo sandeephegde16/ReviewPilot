@@ -7,6 +7,7 @@ import json
 import pytest
 
 import app.concept_provider as concept_provider
+import app.structured_provider as structured_provider
 from app.schemas import get_concept_extraction_output_schema
 
 
@@ -18,16 +19,57 @@ def _build_canonical_request(
     return concept_provider.CanonicalConceptExtractionRequest(
         session_id="session-test",
         operation_name="extract_gradeable_concepts",
+        reasoning_level=reasoning_level,
+        reasoning_type=concept_provider.DEFAULT_REASONING_TYPE,
+        output_mode=concept_provider.DEFAULT_OUTPUT_MODE,
+        response_schema=get_concept_extraction_output_schema(max_concepts=5),
+        prompt_subject="Session evidence",
+        prompt_input_fields=[
+            concept_provider.PromptInputField(label="Session ID", value="session-test"),
+            concept_provider.PromptInputField(label="Session title", value="Advanced MCP"),
+            concept_provider.PromptInputField(
+                label="Session topic",
+                value="MCP transports and tool registration",
+            ),
+            concept_provider.PromptInputField(
+                label="Session transcript",
+                value=(
+                    "MCP tool registration connects tools to the runtime.\n"
+                    "Schema validation keeps integrations reliable."
+                ),
+            ),
+        ],
+        system_instruction_lines=[
+            "Extract the most gradeable concepts from the session evidence.",
+            "A gradeable concept must be specific enough to evaluate in student work.",
+            (
+                "Each concept must include concept_importance as an integer from 1 to 10 "
+                "showing how central the concept is to the session."
+            ),
+            "Use only concepts that are directly supported by the session evidence.",
+            "Do not invent evidence or concepts that are absent from the session.",
+        ],
+        repair_guidance_lines=[
+            "Make sure every concept includes concept_importance as an integer from 1 to 10."
+        ],
+        repair_output_example={
+            "concepts": [
+                {
+                    "name": "Concept name",
+                    "summary": "Short description of the concept.",
+                    "grading_reason": "Why this concept matters for grading.",
+                    "concept_importance": 8,
+                    "evidence": ["Exact supporting session evidence."],
+                }
+            ]
+        },
         session_title="Advanced MCP",
         session_topic="MCP transports and tool registration",
         session_transcript=(
             "MCP tool registration connects tools to the runtime.\n"
             "Schema validation keeps integrations reliable."
         ),
-        reasoning_level=reasoning_level,
-        reasoning_type=concept_provider.DEFAULT_REASONING_TYPE,
-        output_mode=concept_provider.DEFAULT_OUTPUT_MODE,
-        response_schema=get_concept_extraction_output_schema(),
+        max_concepts=5,
     )
 
 
@@ -41,15 +83,15 @@ def test_concept_extraction_output_schema_is_inlined_for_provider_use() -> None:
     assert response_schema["properties"]["concepts"]["items"]["title"] == "GradeableConcept"
     assert response_schema["properties"]["concepts"]["items"]["additionalProperties"] is False
     assert (
-        response_schema["properties"]["concepts"]["items"]["properties"][
-            "concept_importance"
-        ]["minimum"]
+        response_schema["properties"]["concepts"]["items"]["properties"]["concept_importance"][
+            "minimum"
+        ]
         == 1
     )
     assert (
-        response_schema["properties"]["concepts"]["items"]["properties"][
-            "concept_importance"
-        ]["maximum"]
+        response_schema["properties"]["concepts"]["items"]["properties"]["concept_importance"][
+            "maximum"
+        ]
         == 10
     )
     assert (
@@ -68,9 +110,7 @@ def test_select_concept_extraction_provider_returns_anthropic_provider(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
     monkeypatch.delenv("REVIEWPILOT_CONCEPT_MODEL", raising=False)
 
-    provider = concept_provider.select_concept_extraction_provider(
-        reasoning_level="medium",
-    )
+    provider = concept_provider.select_concept_extraction_provider()
 
     assert isinstance(provider, concept_provider.AnthropicConceptExtractionProvider)
     assert provider.provider_name == "anthropic"
@@ -85,9 +125,7 @@ def test_select_concept_extraction_provider_returns_gemini_provider(
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
     monkeypatch.delenv("REVIEWPILOT_CONCEPT_MODEL", raising=False)
 
-    provider = concept_provider.select_concept_extraction_provider(
-        reasoning_level="medium",
-    )
+    provider = concept_provider.select_concept_extraction_provider()
 
     assert isinstance(provider, concept_provider.GeminiConceptExtractionProvider)
     assert provider.provider_name == "gemini"
@@ -103,7 +141,7 @@ def test_select_concept_extraction_provider_requires_real_provider_api_key(
     monkeypatch.delenv("REVIEWPILOT_ANTHROPIC_API_KEY", raising=False)
 
     with pytest.raises(LookupError):
-        concept_provider.select_concept_extraction_provider(reasoning_level="medium")
+        concept_provider.select_concept_extraction_provider()
 
 
 def test_anthropic_provider_uses_forced_tool_schema_and_returns_tool_input(
@@ -139,7 +177,7 @@ def test_anthropic_provider_uses_forced_tool_schema_and_returns_tool_input(
             ]
         }
 
-    monkeypatch.setattr(concept_provider, "_post_json", _fake_post_json)
+    monkeypatch.setattr(structured_provider, "_post_json", _fake_post_json)
     provider = concept_provider.AnthropicConceptExtractionProvider(
         model_name="claude-sonnet-4-0",
         api_key="anthropic-test-key",
@@ -164,20 +202,29 @@ def test_anthropic_provider_uses_forced_tool_schema_and_returns_tool_input(
     assert body["tools"][0]["strict"] is True
     anthropic_input_schema = body["tools"][0]["input_schema"]
     assert anthropic_input_schema["title"] == "ConceptExtractionOutput"
+    assert request.response_schema["properties"]["concepts"]["maxItems"] == request.max_concepts
+    assert "maxItems" not in anthropic_input_schema["properties"]["concepts"]
     assert (
         anthropic_input_schema["properties"]["concepts"]["items"]["properties"][
             "concept_importance"
         ]["type"]
         == "integer"
     )
-    assert "minimum" not in anthropic_input_schema["properties"]["concepts"]["items"][
-        "properties"
-    ]["concept_importance"]
-    assert "maximum" not in anthropic_input_schema["properties"]["concepts"]["items"][
-        "properties"
-    ]["concept_importance"]
+    assert (
+        "minimum"
+        not in anthropic_input_schema["properties"]["concepts"]["items"]["properties"][
+            "concept_importance"
+        ]
+    )
+    assert (
+        "maximum"
+        not in anthropic_input_schema["properties"]["concepts"]["items"]["properties"][
+            "concept_importance"
+        ]
+    )
     assert "Reasoning level: high" in body["system"]
     assert "concept_importance as an integer from 1 to 10" in body["system"]
+    assert "Return no more than 5 concepts." in body["system"]
     assert "Session transcript:" in body["messages"][0]["content"][0]["text"]
 
 
@@ -204,12 +251,10 @@ def test_gemini_provider_uses_structured_output_schema_and_parses_json_text(
                                             {
                                                 "name": "Schema validation",
                                                 "summary": (
-                                                    "Explains how structured outputs stay"
-                                                    " reliable."
+                                                    "Explains how structured outputs stay reliable."
                                                 ),
                                                 "grading_reason": (
-                                                    "Students should preserve schema"
-                                                    " contracts."
+                                                    "Students should preserve schema contracts."
                                                 ),
                                                 "concept_importance": 8,
                                                 "evidence": [
@@ -229,7 +274,7 @@ def test_gemini_provider_uses_structured_output_schema_and_parses_json_text(
             ]
         }
 
-    monkeypatch.setattr(concept_provider, "_post_json", _fake_post_json)
+    monkeypatch.setattr(structured_provider, "_post_json", _fake_post_json)
     provider = concept_provider.GeminiConceptExtractionProvider(
         model_name="gemini-2.5-flash",
         api_key="gemini-test-key",
@@ -241,8 +286,7 @@ def test_gemini_provider_uses_structured_output_schema_and_parses_json_text(
     assert result["concepts"][0]["name"] == "Schema validation"
     assert captured_request["provider_name"] == "gemini"
     assert (
-        captured_request["url"]
-        == "https://generativelanguage.googleapis.com/v1beta/models/"
+        captured_request["url"] == "https://generativelanguage.googleapis.com/v1beta/models/"
         "gemini-2.5-flash:generateContent"
     )
     body = captured_request["body"]
@@ -254,6 +298,7 @@ def test_gemini_provider_uses_structured_output_schema_and_parses_json_text(
     assert body["generationConfig"]["responseMimeType"] == "application/json"
     assert body["generationConfig"]["responseJsonSchema"] == request.response_schema
     assert "Operation: extract_gradeable_concepts" in body["contents"][0]["parts"][0]["text"]
+    assert "Return no more than 5 concepts." in body["contents"][0]["parts"][0]["text"]
 
 
 def test_gemini_provider_uses_thinking_level_for_gemini_3_models(
@@ -295,7 +340,7 @@ def test_gemini_provider_uses_thinking_level_for_gemini_3_models(
             ]
         }
 
-    monkeypatch.setattr(concept_provider, "_post_json", _fake_post_json)
+    monkeypatch.setattr(structured_provider, "_post_json", _fake_post_json)
     provider = concept_provider.GeminiConceptExtractionProvider(
         model_name="gemini-3-flash-preview",
         api_key="gemini-test-key",
@@ -358,50 +403,85 @@ def test_provider_user_prompt_includes_schema_repair_context() -> None:
     assert '{"concepts": [{"name": "Only name"}]}' in prompt
 
 
-def test_anthropic_input_schema_strips_integer_bounds_only() -> None:
-    """Anthropic schema shaping should remove integer bounds while preserving shared schema."""
-    response_schema = get_concept_extraction_output_schema()
+def test_anthropic_input_schema_strips_unsupported_anthropic_fields() -> None:
+    """Anthropic schema shaping should remove unsupported fields without mutating the source."""
+    response_schema = get_concept_extraction_output_schema(max_concepts=5)
 
     anthropic_schema = concept_provider._build_anthropic_input_schema(response_schema)  # noqa: SLF001
 
     assert (
-        response_schema["properties"]["concepts"]["items"]["properties"][
-            "concept_importance"
-        ]["minimum"]
+        response_schema["properties"]["concepts"]["items"]["properties"]["concept_importance"][
+            "minimum"
+        ]
         == 1
     )
     assert (
-        response_schema["properties"]["concepts"]["items"]["properties"][
-            "concept_importance"
-        ]["maximum"]
+        response_schema["properties"]["concepts"]["items"]["properties"]["concept_importance"][
+            "maximum"
+        ]
         == 10
     )
-    assert "minimum" not in anthropic_schema["properties"]["concepts"]["items"][
-        "properties"
-    ]["concept_importance"]
-    assert "maximum" not in anthropic_schema["properties"]["concepts"]["items"][
-        "properties"
-    ]["concept_importance"]
+    assert response_schema["properties"]["concepts"]["maxItems"] == 5
+    assert (
+        "minimum"
+        not in anthropic_schema["properties"]["concepts"]["items"]["properties"][
+            "concept_importance"
+        ]
+    )
+    assert (
+        "maximum"
+        not in anthropic_schema["properties"]["concepts"]["items"]["properties"][
+            "concept_importance"
+        ]
+    )
+    assert "maxItems" not in anthropic_schema["properties"]["concepts"]
     assert anthropic_schema["properties"]["concepts"]["minItems"] == 1
 
 
-def test_heuristic_provider_limits_generated_concepts_to_five() -> None:
-    """Heuristic fallback should cap its generated concept list at five items."""
+def test_heuristic_provider_honors_request_max_concepts() -> None:
+    """Heuristic fallback should honor the canonical concept cap."""
     provider = concept_provider.HeuristicConceptExtractionProvider(
         model_name="heuristic-v1",
     )
     request = concept_provider.CanonicalConceptExtractionRequest(
         session_id="session-many-concepts",
         operation_name="extract_gradeable_concepts",
-        session_title="One / Two / Three / Four / Five / Six",
-        session_topic="Alpha, Beta, Gamma, Delta, Epsilon, Zeta",
-        session_transcript="Alpha connects to Beta and Gamma.",
         reasoning_level="medium",
         reasoning_type=concept_provider.DEFAULT_REASONING_TYPE,
         output_mode=concept_provider.DEFAULT_OUTPUT_MODE,
-        response_schema=get_concept_extraction_output_schema(),
+        response_schema=get_concept_extraction_output_schema(max_concepts=3),
+        prompt_subject="Session evidence",
+        prompt_input_fields=[
+            concept_provider.PromptInputField(
+                label="Session ID",
+                value="session-many-concepts",
+            ),
+            concept_provider.PromptInputField(
+                label="Session title",
+                value="One / Two / Three / Four / Five / Six",
+            ),
+            concept_provider.PromptInputField(
+                label="Session topic",
+                value="Alpha, Beta, Gamma, Delta, Epsilon, Zeta",
+            ),
+            concept_provider.PromptInputField(
+                label="Session transcript",
+                value="Alpha connects to Beta and Gamma.",
+            ),
+        ],
+        system_instruction_lines=[
+            "Extract the most gradeable concepts from the session evidence.",
+        ],
+        repair_guidance_lines=[
+            "Make sure every concept includes concept_importance as an integer from 1 to 10."
+        ],
+        repair_output_example={"concepts": []},
+        session_title="One / Two / Three / Four / Five / Six",
+        session_topic="Alpha, Beta, Gamma, Delta, Epsilon, Zeta",
+        session_transcript="Alpha connects to Beta and Gamma.",
+        max_concepts=3,
     )
 
     result = provider.extract_concepts(request, trace_id="trace-heuristic-limit")
 
-    assert len(result["concepts"]) == concept_provider.MAX_HEURISTIC_CONCEPT_COUNT
+    assert len(result["concepts"]) == 3
