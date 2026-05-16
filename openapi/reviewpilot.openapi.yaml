@@ -9,153 +9,211 @@ paths:
       description: Return a simple health response for the API.
       operationId: health_health_get
       responses:
-        "200":
+        '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                type: object
-                title: Response Health Health Get
                 additionalProperties:
                   type: string
+                type: object
+                title: Response Health Health Get
+  /sessions/{session_id}/extract-concepts:
+    post:
+      tags:
+      - sessions
+      summary: Extract Session Concepts
+      description: Extract gradeable concepts for a session using normalized session
+        evidence.
+      operationId: extract_session_concepts_sessions__session_id__extract_concepts_post
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: X-Trace-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Trace-Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/ExtractConceptsRequest'
+              - type: 'null'
+              title: Request
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtractConceptsResponse'
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Not Found
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Internal Server Error
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /allsessions:
     get:
       tags:
-        - sessions
+      - sessions
       summary: Get All Sessions
       description: Return all stored session titles and topics.
       operationId: get_all_sessions_allsessions_get
       parameters:
-        - name: X-Trace-Id
-          in: header
-          required: false
-          schema:
-            anyOf:
-              - type: string
-              - type: "null"
-            title: X-Trace-Id
+      - name: X-Trace-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Trace-Id
       responses:
-        "200":
+        '200':
           description: Successful Response
           content:
             application/json:
               schema:
                 type: array
-                title: Response Get All Sessions Allsessions Get
                 items:
-                  $ref: "#/components/schemas/SessionSummary"
-        "500":
-          description: Internal Server Error
+                  $ref: '#/components/schemas/SessionSummary'
+                title: Response Get All Sessions Allsessions Get
+        '500':
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ApiErrorResponse"
-        "422":
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Internal Server Error
+        '422':
           description: Validation Error
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/HTTPValidationError"
+                $ref: '#/components/schemas/HTTPValidationError'
   /sessions/{session_id}/submissions:
     get:
       tags:
-        - submissions
+      - submissions
       summary: Get Session Submissions
       description: Return all assignment submissions associated with a session.
       operationId: get_session_submissions_sessions__session_id__submissions_get
       parameters:
-        - name: session_id
-          in: path
-          required: true
-          schema:
-            type: string
-            title: Session Id
-        - name: X-Trace-Id
-          in: header
-          required: false
-          schema:
-            anyOf:
-              - type: string
-              - type: "null"
-            title: X-Trace-Id
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: X-Trace-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Trace-Id
       responses:
-        "200":
+        '200':
           description: Successful Response
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/SessionSubmission"
-                title: Response Get Session Submissions Sessions  Session Id  Submissions Get
-        "404":
+                  $ref: '#/components/schemas/SessionSubmission'
+                title: Response Get Session Submissions Sessions  Session Id  Submissions
+                  Get
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
           description: Not Found
+        '500':
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ApiErrorResponse"
-        "500":
+                $ref: '#/components/schemas/ApiErrorResponse'
           description: Internal Server Error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ApiErrorResponse"
-        "422":
+        '422':
           description: Validation Error
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/HTTPValidationError"
+                $ref: '#/components/schemas/HTTPValidationError'
   /students/{student_id}/submissions:
     get:
       tags:
-        - submissions
+      - submissions
       summary: Get Student Submissions
       description: Return all assignment submissions associated with a student.
       operationId: get_student_submissions_students__student_id__submissions_get
       parameters:
-        - name: student_id
-          in: path
-          required: true
-          schema:
-            type: string
-            title: Student Id
-        - name: X-Trace-Id
-          in: header
-          required: false
-          schema:
-            anyOf:
-              - type: string
-              - type: "null"
-            title: X-Trace-Id
+      - name: student_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Student Id
+      - name: X-Trace-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Trace-Id
       responses:
-        "200":
+        '200':
           description: Successful Response
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/StudentSubmission"
-                title: Response Get Student Submissions Students  Student Id  Submissions Get
-        "404":
+                  $ref: '#/components/schemas/StudentSubmission'
+                title: Response Get Student Submissions Students  Student Id  Submissions
+                  Get
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
           description: Not Found
+        '500':
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ApiErrorResponse"
-        "500":
+                $ref: '#/components/schemas/ApiErrorResponse'
           description: Internal Server Error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ApiErrorResponse"
-        "422":
+        '422':
           description: Validation Error
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/HTTPValidationError"
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     ApiError:
@@ -174,36 +232,120 @@ components:
           description: Trace identifier for correlating logs.
       type: object
       required:
-        - code
-        - message
-        - trace_id
+      - code
+      - message
+      - trace_id
       title: ApiError
       description: Machine-readable error details for API failures.
     ApiErrorResponse:
       properties:
         error:
-          $ref: "#/components/schemas/ApiError"
+          $ref: '#/components/schemas/ApiError'
       type: object
       required:
-        - error
+      - error
       title: ApiErrorResponse
       description: Top-level error response payload.
-    SessionSummary:
+    ApiWarning:
       properties:
-        session_title:
+        code:
           type: string
-          title: Session Title
-          description: Stored title for the session.
-        session_topic:
+          title: Code
+          description: Stable warning code.
+        message:
           type: string
-          title: Session Topic
-          description: Stored topic summary for the session.
+          title: Message
+          description: Human-readable warning message.
       type: object
       required:
-        - session_title
-        - session_topic
-      title: SessionSummary
-      description: Public response model for a session summary.
+      - code
+      - message
+      title: ApiWarning
+      description: Machine-readable warning details for partial fallbacks.
+    ExtractConceptsRequest:
+      properties:
+        reasoning_level:
+          type: string
+          enum:
+          - low
+          - medium
+          - high
+          title: Reasoning Level
+          description: Requested reasoning depth for concept extraction.
+          default: medium
+      type: object
+      title: ExtractConceptsRequest
+      description: Public request payload for gradeable concept extraction.
+    ExtractConceptsResponse:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+          description: Unique identifier for the session.
+        concepts:
+          items:
+            $ref: '#/components/schemas/GradeableConcept'
+          type: array
+          minItems: 1
+          title: Concepts
+          description: Gradeable concepts extracted from the session.
+        warnings:
+          items:
+            $ref: '#/components/schemas/ApiWarning'
+          type: array
+          title: Warnings
+          description: Warnings describing any fallback behavior during extraction.
+      type: object
+      required:
+      - session_id
+      - concepts
+      title: ExtractConceptsResponse
+      description: Public response payload for extracted gradeable concepts.
+    GradeableConcept:
+      properties:
+        name:
+          type: string
+          title: Name
+          description: Short concept label.
+        summary:
+          type: string
+          title: Summary
+          description: Brief explanation of the concept.
+        grading_reason:
+          type: string
+          title: Grading Reason
+          description: Why this concept is relevant for grading.
+        concept_importance:
+          type: integer
+          maximum: 10.0
+          minimum: 1.0
+          title: Concept Importance
+          description: Importance score from 1 to 10 based on how central the concept is to the session.
+        evidence:
+          items:
+            type: string
+          type: array
+          minItems: 1
+          title: Evidence
+          description: Session evidence used to justify the concept.
+      type: object
+      required:
+      - name
+      - summary
+      - grading_reason
+      - concept_importance
+      - evidence
+      title: GradeableConcept
+      description: Public response model for one extracted gradeable concept.
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
     SessionSubmission:
       properties:
         submission_id:
@@ -220,8 +362,8 @@ components:
           description: Assignment title shown to reviewers.
         due_at:
           anyOf:
-            - type: string
-            - type: "null"
+          - type: string
+          - type: 'null'
           title: Due At
           description: Assignment due date stored for the related requirement.
         student_id:
@@ -239,48 +381,48 @@ components:
         source_type:
           type: string
           enum:
-            - github_pr
-            - local_folder
-            - zip_upload
+          - github_pr
+          - local_folder
+          - zip_upload
           title: Source Type
           description: Submission source type.
         repo_url:
           anyOf:
-            - type: string
-            - type: "null"
+          - type: string
+          - type: 'null'
           title: Repo Url
           description: Repository URL when the source type is github_pr.
         local_path:
           anyOf:
-            - type: string
-            - type: "null"
+          - type: string
+          - type: 'null'
           title: Local Path
           description: Local folder path when the source type is local_folder.
         zip_path:
           anyOf:
-            - type: string
-            - type: "null"
+          - type: string
+          - type: 'null'
           title: Zip Path
           description: Uploaded zip path when the source type is zip_upload.
         youtube_demo_url:
           anyOf:
-            - type: string
-            - type: "null"
+          - type: string
+          - type: 'null'
           title: Youtube Demo Url
           description: Optional demo recording URL provided by the student.
         linkedin_url:
           anyOf:
-            - type: string
-            - type: "null"
+          - type: string
+          - type: 'null'
           title: Linkedin Url
           description: Optional LinkedIn URL provided by the student.
         status:
           type: string
           enum:
-            - submitted
-            - under_review
-            - reviewed
-            - needs_resubmission
+          - submitted
+          - under_review
+          - reviewed
+          - needs_resubmission
           title: Status
           description: Current review status for the submission.
         submitted_at:
@@ -289,17 +431,33 @@ components:
           description: Submission timestamp stored in SQLite.
       type: object
       required:
-        - submission_id
-        - assignment_requirement_id
-        - assignment_title
-        - student_id
-        - student_code
-        - student_full_name
-        - source_type
-        - status
-        - submitted_at
+      - submission_id
+      - assignment_requirement_id
+      - assignment_title
+      - student_id
+      - student_code
+      - student_full_name
+      - source_type
+      - status
+      - submitted_at
       title: SessionSubmission
       description: Public response model for an assignment submission in a session.
+    SessionSummary:
+      properties:
+        session_title:
+          type: string
+          title: Session Title
+          description: Stored title for the session.
+        session_topic:
+          type: string
+          title: Session Topic
+          description: Stored topic summary for the session.
+      type: object
+      required:
+      - session_title
+      - session_topic
+      title: SessionSummary
+      description: Public response model for a session summary.
     StudentSubmission:
       properties:
         submission_id:
@@ -328,8 +486,8 @@ components:
           description: Assignment title shown to reviewers.
         due_at:
           anyOf:
-            - type: string
-            - type: "null"
+          - type: string
+          - type: 'null'
           title: Due At
           description: Assignment due date stored for the related requirement.
         student_id:
@@ -347,48 +505,48 @@ components:
         source_type:
           type: string
           enum:
-            - github_pr
-            - local_folder
-            - zip_upload
+          - github_pr
+          - local_folder
+          - zip_upload
           title: Source Type
           description: Submission source type.
         repo_url:
           anyOf:
-            - type: string
-            - type: "null"
+          - type: string
+          - type: 'null'
           title: Repo Url
           description: Repository URL when the source type is github_pr.
         local_path:
           anyOf:
-            - type: string
-            - type: "null"
+          - type: string
+          - type: 'null'
           title: Local Path
           description: Local folder path when the source type is local_folder.
         zip_path:
           anyOf:
-            - type: string
-            - type: "null"
+          - type: string
+          - type: 'null'
           title: Zip Path
           description: Uploaded zip path when the source type is zip_upload.
         youtube_demo_url:
           anyOf:
-            - type: string
-            - type: "null"
+          - type: string
+          - type: 'null'
           title: Youtube Demo Url
           description: Optional demo recording URL provided by the student.
         linkedin_url:
           anyOf:
-            - type: string
-            - type: "null"
+          - type: string
+          - type: 'null'
           title: Linkedin Url
           description: Optional LinkedIn URL provided by the student.
         status:
           type: string
           enum:
-            - submitted
-            - under_review
-            - reviewed
-            - needs_resubmission
+          - submitted
+          - under_review
+          - reviewed
+          - needs_resubmission
           title: Status
           description: Current review status for the submission.
         submitted_at:
@@ -397,38 +555,30 @@ components:
           description: Submission timestamp stored in SQLite.
       type: object
       required:
-        - submission_id
-        - session_id
-        - session_title
-        - session_topic
-        - assignment_requirement_id
-        - assignment_title
-        - student_id
-        - student_code
-        - student_full_name
-        - source_type
-        - status
-        - submitted_at
+      - submission_id
+      - session_id
+      - session_title
+      - session_topic
+      - assignment_requirement_id
+      - assignment_title
+      - student_id
+      - student_code
+      - student_full_name
+      - source_type
+      - status
+      - submitted_at
       title: StudentSubmission
-      description: Public response model for an assignment submission for a single student.
-    HTTPValidationError:
-      properties:
-        detail:
-          type: array
-          title: Detail
-          items:
-            $ref: "#/components/schemas/ValidationError"
-      type: object
-      title: HTTPValidationError
+      description: Public response model for an assignment submission for a single
+        student.
     ValidationError:
       properties:
         loc:
-          type: array
-          title: Location
           items:
             anyOf:
-              - type: string
-              - type: integer
+            - type: string
+            - type: integer
+          type: array
+          title: Location
         msg:
           type: string
           title: Message
@@ -442,7 +592,7 @@ components:
           title: Context
       type: object
       required:
-        - loc
-        - msg
-        - type
+      - loc
+      - msg
+      - type
       title: ValidationError

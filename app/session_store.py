@@ -6,7 +6,12 @@ import sqlite3
 from pathlib import Path
 from time import perf_counter
 
-from app.schemas import SessionSubmission, SessionSummary, StudentSubmission
+from app.schemas import (
+    SessionExtractionSource,
+    SessionSubmission,
+    SessionSummary,
+    StudentSubmission,
+)
 from app.telemetry import emit_event
 
 
@@ -83,6 +88,89 @@ def list_session_summaries(
         elapsed_ms=elapsed_ms,
     )
     return session_summaries
+
+
+def get_session_extraction_source(
+    *,
+    database_path: Path,
+    session_id: str,
+    trace_id: str,
+    review_id: str | None = None,
+) -> SessionExtractionSource:
+    """Fetch one session and the fields required for concept extraction."""
+    start_time = perf_counter()
+    emit_event(
+        trace_id=trace_id,
+        review_id=review_id,
+        session_id=session_id,
+        step_name="get_session_extraction_source.query_started",
+        tool_name=None,
+        data_store="sqlite",
+        provider_name=None,
+        validation_status="pending",
+        retry_count=0,
+    )
+    connection = sqlite3.connect(_build_read_only_uri(database_path), uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        row = connection.execute(
+            """
+            SELECT id, session_title, session_topic, session_transcript
+            FROM session_content
+            WHERE id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+            emit_event(
+                trace_id=trace_id,
+                review_id=review_id,
+                session_id=session_id,
+                step_name="get_session_extraction_source.session_not_found",
+                tool_name=None,
+                data_store="sqlite",
+                provider_name=None,
+                validation_status="failed",
+                retry_count=0,
+                elapsed_ms=elapsed_ms,
+                failure_reason="session_not_found",
+            )
+            raise SessionNotFoundError(session_id)
+    except sqlite3.Error as exc:
+        elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+        emit_event(
+            trace_id=trace_id,
+            review_id=review_id,
+            session_id=session_id,
+            step_name="get_session_extraction_source.query_failed",
+            tool_name=None,
+            data_store="sqlite",
+            provider_name=None,
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=elapsed_ms,
+            failure_reason=str(exc),
+        )
+        raise
+    finally:
+        connection.close()
+
+    extraction_source = SessionExtractionSource.model_validate(dict(row))
+    elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+    emit_event(
+        trace_id=trace_id,
+        review_id=review_id,
+        session_id=session_id,
+        step_name="get_session_extraction_source.query_completed",
+        tool_name=None,
+        data_store="sqlite",
+        provider_name=None,
+        validation_status="passed",
+        retry_count=0,
+        elapsed_ms=elapsed_ms,
+    )
+    return extraction_source
 
 
 def list_session_submissions(
