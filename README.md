@@ -43,6 +43,9 @@ Session API telemetry is emitted as one JSON log line per event to server stdout
 - `gemini` (default secondary): real Gemini API call using structured JSON schema output
 - `heuristic` (default final fallback): local deterministic fallback, no external API call
 
+Each extracted concept includes `concept_importance`, an integer from `1` to `10`
+that indicates how central the concept is to the session.
+
 Configuration is now split into:
 
 - [.reviewpilot.config.json](/Users/sandeep.hegde/IdeaProjects/EAG_V3/Assignment_Week5_GradePilot/.reviewpilot.config.json): tracked provider routing policy, model order, and cooldown settings

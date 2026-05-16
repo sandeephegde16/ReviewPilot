@@ -315,6 +315,12 @@ components:
           type: string
           title: Grading Reason
           description: Why this concept is relevant for grading.
+        concept_importance:
+          type: integer
+          maximum: 10.0
+          minimum: 1.0
+          title: Concept Importance
+          description: Importance score from 1 to 10 based on how central the concept is to the session.
         evidence:
           items:
             type: string
@@ -327,6 +333,7 @@ components:
       - name
       - summary
       - grading_reason
+      - concept_importance
       - evidence
       title: GradeableConcept
       description: Public response model for one extracted gradeable concept.

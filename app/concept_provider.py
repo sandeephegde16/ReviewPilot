@@ -41,6 +41,7 @@ GEMINI_3_REASONING_LEVEL_BY_LEVEL = {
     "medium": "medium",
     "high": "high",
 }
+MAX_HEURISTIC_CONCEPT_COUNT = 5
 
 
 class CanonicalConceptExtractionRequest(BaseModel):
@@ -129,6 +130,7 @@ class HeuristicConceptExtractionProvider:
             repaired_output = self._repair_previous_output(
                 previous_output=repair_context.previous_output,
                 evidence_segments=evidence_segments,
+                session_title=request.session_title,
                 session_topic=request.session_topic,
             )
             if repaired_output is not None:
@@ -146,6 +148,7 @@ class HeuristicConceptExtractionProvider:
         *,
         previous_output: dict[str, Any],
         evidence_segments: list[str],
+        session_title: str,
         session_topic: str,
     ) -> dict[str, Any] | None:
         """Attempt to coerce a previously invalid payload into the required schema."""
@@ -161,6 +164,9 @@ class HeuristicConceptExtractionProvider:
                 )
                 summary = str(raw_concept.get("summary") or "").strip()
                 grading_reason = str(raw_concept.get("grading_reason") or "").strip()
+                concept_importance = self._normalize_concept_importance(
+                    raw_concept.get("concept_importance")
+                )
                 evidence = raw_concept.get("evidence")
                 if isinstance(evidence, list):
                     normalized_evidence = [
@@ -172,6 +178,7 @@ class HeuristicConceptExtractionProvider:
                 concept_name = self._normalize_concept_name(str(raw_concept))
                 summary = ""
                 grading_reason = ""
+                concept_importance = None
                 normalized_evidence = []
 
             if not concept_name:
@@ -186,12 +193,20 @@ class HeuristicConceptExtractionProvider:
                 )
             if not normalized_evidence:
                 normalized_evidence = [self._select_evidence(evidence_segments, concept_name)]
+            if concept_importance is None:
+                concept_importance = self._score_concept_importance(
+                    concept_name=concept_name,
+                    session_title=session_title,
+                    session_topic=session_topic,
+                    evidence_segments=evidence_segments,
+                )
 
             repaired_concepts.append(
                 {
                     "name": concept_name,
                     "summary": summary,
                     "grading_reason": grading_reason,
+                    "concept_importance": concept_importance,
                     "evidence": normalized_evidence,
                 }
             )
@@ -218,10 +233,16 @@ class HeuristicConceptExtractionProvider:
             ]
 
         concepts: list[dict[str, Any]] = []
-        for concept_name in concept_candidates[:3]:
+        for concept_name in concept_candidates[:MAX_HEURISTIC_CONCEPT_COUNT]:
             normalized_name = self._normalize_concept_name(concept_name)
             if not normalized_name:
                 continue
+            concept_importance = self._score_concept_importance(
+                concept_name=normalized_name,
+                session_title=session_title,
+                session_topic=session_topic,
+                evidence_segments=evidence_segments,
+            )
             concepts.append(
                 {
                     "name": normalized_name,
@@ -230,6 +251,7 @@ class HeuristicConceptExtractionProvider:
                         f"Students can be graded on how well they apply "
                         f"{normalized_name.lower()}."
                     ),
+                    "concept_importance": concept_importance,
                     "evidence": [self._select_evidence(evidence_segments, normalized_name)],
                 }
             )
@@ -247,6 +269,12 @@ class HeuristicConceptExtractionProvider:
                 "grading_reason": (
                     f"Students can be graded on how well they apply "
                     f"{fallback_name.lower()}."
+                ),
+                "concept_importance": self._score_concept_importance(
+                    concept_name=fallback_name,
+                    session_title=session_title,
+                    session_topic=session_topic,
+                    evidence_segments=evidence_segments,
                 ),
                 "evidence": [self._select_evidence(evidence_segments, fallback_name)],
             }
@@ -280,6 +308,52 @@ class HeuristicConceptExtractionProvider:
             if concept_terms and any(term in lowered_segment for term in concept_terms):
                 return segment
         return evidence_segments[0]
+
+    def _score_concept_importance(
+        self,
+        *,
+        concept_name: str,
+        session_title: str,
+        session_topic: str,
+        evidence_segments: list[str],
+    ) -> int:
+        """Assign a deterministic 1-10 score based on concept prominence in the session."""
+        normalized_name = concept_name.lower()
+        score = 5
+        if normalized_name in session_topic.lower():
+            score += 2
+        if normalized_name in session_title.lower():
+            score += 1
+        score += min(2, self._count_matching_segments(evidence_segments, normalized_name))
+        return max(1, min(10, score))
+
+    def _count_matching_segments(
+        self,
+        evidence_segments: list[str],
+        normalized_name: str,
+    ) -> int:
+        """Count evidence segments that mention any concept term."""
+        concept_terms = {term for term in normalized_name.split() if term}
+        match_count = 0
+        for segment in evidence_segments:
+            lowered_segment = segment.lower()
+            if concept_terms and any(term in lowered_segment for term in concept_terms):
+                match_count += 1
+        return match_count
+
+    def _normalize_concept_importance(self, value: Any) -> int | None:
+        """Coerce provider output into a valid concept importance score when possible."""
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            normalized_value = value
+        elif isinstance(value, str) and value.strip().isdigit():
+            normalized_value = int(value.strip())
+        else:
+            return None
+        if 1 <= normalized_value <= 10:
+            return normalized_value
+        return None
 
 
 class AnthropicConceptExtractionProvider:
@@ -446,7 +520,7 @@ def _build_anthropic_request_body(
                 "name": request.operation_name,
                 "description": _build_tool_description(),
                 "strict": True,
-                "input_schema": request.response_schema,
+                "input_schema": _build_anthropic_input_schema(request.response_schema),
             }
         ],
         "tool_choice": {
@@ -462,6 +536,30 @@ def _build_anthropic_request_body(
     if thinking_config is not None:
         request_body["thinking"] = thinking_config
     return request_body
+
+
+def _build_anthropic_input_schema(response_schema: dict[str, Any]) -> dict[str, Any]:
+    """Remove JSON Schema fields that Anthropic tool schemas reject."""
+    return _strip_anthropic_unsupported_schema_fields(response_schema)
+
+
+def _strip_anthropic_unsupported_schema_fields(node: Any) -> Any:
+    """Recursively drop schema keywords unsupported by Anthropic tool validation."""
+    if isinstance(node, list):
+        return [_strip_anthropic_unsupported_schema_fields(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    normalized_node = {
+        key: _strip_anthropic_unsupported_schema_fields(value)
+        for key, value in node.items()
+    }
+    if normalized_node.get("type") == "integer":
+        normalized_node.pop("minimum", None)
+        normalized_node.pop("maximum", None)
+        normalized_node.pop("exclusiveMinimum", None)
+        normalized_node.pop("exclusiveMaximum", None)
+    return normalized_node
 
 
 def _build_gemini_request_body(
@@ -522,6 +620,10 @@ def _build_provider_system_prompt(request: CanonicalConceptExtractionRequest) ->
             f"Reasoning type: {request.reasoning_type}",
             "Extract the most gradeable concepts from the session evidence.",
             "A gradeable concept must be specific enough to evaluate in student work.",
+            (
+                "Each concept must include concept_importance as an integer from 1 to 10 "
+                "showing how central the concept is to the session."
+            ),
             "Use only concepts that are directly supported by the session evidence.",
             "Do not invent evidence or concepts that are absent from the session.",
         ]
@@ -649,6 +751,12 @@ def _build_provider_user_prompt(
                 "Schema check failed on the previous output. Repair the response using "
                 "the same schema."
             ),
+            (
+                "Make sure every concept includes concept_importance as an integer "
+                "from 1 to 10."
+            ),
+            "Return a root JSON object in this shape:",
+            _build_repair_output_example(),
             f"Validation errors: {'; '.join(repair_context.validation_errors)}",
             "Previous output:",
             json.dumps(repair_context.previous_output, ensure_ascii=True),
@@ -661,7 +769,26 @@ def _build_tool_description() -> str:
     """Describe the structured extraction tool used by Anthropic tool forcing."""
     return (
         "Return the final gradeable concepts as structured JSON that matches the provided "
-        "schema. Each concept must include a name, summary, grading reason, and evidence."
+        "schema. Each concept must include a name, summary, grading reason, "
+        "concept importance from 1 to 10, and evidence."
+    )
+
+
+def _build_repair_output_example() -> str:
+    """Return a compact valid output example for schema-repair prompts."""
+    return json.dumps(
+        {
+            "concepts": [
+                {
+                    "name": "Concept name",
+                    "summary": "Short description of the concept.",
+                    "grading_reason": "Why this concept matters for grading.",
+                    "concept_importance": 8,
+                    "evidence": ["Exact supporting session evidence."],
+                }
+            ]
+        },
+        ensure_ascii=True,
     )
 
 

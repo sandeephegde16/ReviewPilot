@@ -50,6 +50,14 @@ class GradeableConcept(BaseModel):
     name: str = Field(description="Short concept label.")
     summary: str = Field(description="Brief explanation of the concept.")
     grading_reason: str = Field(description="Why this concept is relevant for grading.")
+    concept_importance: int = Field(
+        description=(
+            "Importance score from 1 to 10 based on how central the concept "
+            "is to the session."
+        ),
+        ge=1,
+        le=10,
+    )
     evidence: list[str] = Field(
         description="Session evidence used to justify the concept.",
         min_length=1,

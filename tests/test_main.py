@@ -380,6 +380,7 @@ def test_extract_session_concepts_returns_concepts_from_transcript(
                         "name": "Tool registration",
                         "summary": "Explains how MCP tools are exposed to the runtime.",
                         "grading_reason": "Students should be able to wire tools correctly.",
+                        "concept_importance": 9,
                         "evidence": [
                             "MCP tool registration connects tools to the runtime."
                         ],
@@ -388,6 +389,7 @@ def test_extract_session_concepts_returns_concepts_from_transcript(
                         "name": "Schema validation",
                         "summary": "Covers validating tool inputs and outputs.",
                         "grading_reason": "Students should produce reliable structured outputs.",
+                        "concept_importance": 8,
                         "evidence": [
                             "Transport setup and schema validation keep integrations reliable."
                         ],
@@ -423,6 +425,7 @@ def test_extract_session_concepts_returns_concepts_from_transcript(
                 "name": "Tool registration",
                 "summary": "Explains how MCP tools are exposed to the runtime.",
                 "grading_reason": "Students should be able to wire tools correctly.",
+                "concept_importance": 9,
                 "evidence": [
                     "MCP tool registration connects tools to the runtime."
                 ],
@@ -431,6 +434,7 @@ def test_extract_session_concepts_returns_concepts_from_transcript(
                 "name": "Schema validation",
                 "summary": "Covers validating tool inputs and outputs.",
                 "grading_reason": "Students should produce reliable structured outputs.",
+                "concept_importance": 8,
                 "evidence": [
                     "Transport setup and schema validation keep integrations reliable."
                 ],
@@ -450,6 +454,10 @@ def test_extract_session_concepts_returns_concepts_from_transcript(
     assert provider_request.response_schema["type"] == "object"
     assert provider_request.response_schema["required"] == ["concepts"]
     assert "concepts" in provider_request.response_schema["properties"]
+    assert (
+        provider_request.response_schema["properties"]["concepts"]["items"]["required"]
+        == ["name", "summary", "grading_reason", "concept_importance", "evidence"]
+    )
     assert "MCP tool registration connects tools to the runtime." in (
         provider_request.session_transcript or ""
     )
@@ -470,6 +478,7 @@ def test_extract_session_concepts_accepts_plain_text_transcript(
                         "name": "Agent workflows",
                         "summary": "Explains how agents coordinate tools and control flow.",
                         "grading_reason": "Students should understand orchestrated workflows.",
+                        "concept_importance": 8,
                         "evidence": [
                             (
                                 "Agents coordinate tools, prompts, and control flow for "
@@ -507,6 +516,7 @@ def test_extract_session_concepts_accepts_plain_text_transcript(
                 "name": "Agent workflows",
                 "summary": "Explains how agents coordinate tools and control flow.",
                 "grading_reason": "Students should understand orchestrated workflows.",
+                "concept_importance": 8,
                 "evidence": [
                     (
                         "Agents coordinate tools, prompts, and control flow for "
@@ -588,6 +598,7 @@ def test_extract_session_concepts_cleans_timestamp_artifacts_before_provider_cal
                         "name": "Agent workflows",
                         "summary": "Explains how agents coordinate tools and control flow.",
                         "grading_reason": "Students should understand orchestrated workflows.",
+                        "concept_importance": 8,
                         "evidence": [
                             (
                                 "All right, here I am again and today we're going "
@@ -642,6 +653,7 @@ def test_extract_session_concepts_returns_warning_when_transcript_is_missing(
                         "name": "Telemetry workflows",
                         "summary": "Synthesizes the main workflow concept from the topic.",
                         "grading_reason": "Students should understand the core workflow shape.",
+                        "concept_importance": 7,
                         "evidence": ["Session topic: Tracing review workflows"],
                     }
                 ]
@@ -669,6 +681,7 @@ def test_extract_session_concepts_returns_warning_when_transcript_is_missing(
                 "name": "Telemetry workflows",
                 "summary": "Synthesizes the main workflow concept from the topic.",
                 "grading_reason": "Students should understand the core workflow shape.",
+                "concept_importance": 7,
                 "evidence": ["Session topic: Tracing review workflows"],
             }
         ],
@@ -705,6 +718,7 @@ def test_extract_session_concepts_repairs_schema_failure_once(
                         "name": "Schema validation",
                         "summary": "Explains output validation for tool results.",
                         "grading_reason": "Students should enforce structured contracts.",
+                        "concept_importance": 8,
                         "evidence": [
                             "Transport setup and schema validation keep integrations reliable."
                         ],
@@ -800,6 +814,7 @@ def test_extract_session_concepts_does_not_fall_back_after_failed_schema_repair(
                         "name": "Should not run",
                         "summary": "Fallback provider should never be called here.",
                         "grading_reason": "Schema failure should stop the workflow.",
+                        "concept_importance": 6,
                         "evidence": ["This response must not be used."],
                     }
                 ]
@@ -915,6 +930,7 @@ def test_extract_session_concepts_emits_structured_telemetry(
                         "name": "Telemetry workflows",
                         "summary": "Synthesizes the main workflow concept from the topic.",
                         "grading_reason": "Students should understand the core workflow shape.",
+                        "concept_importance": 7,
                         "evidence": ["Session topic: Tracing review workflows"],
                     }
                 ]
@@ -1013,6 +1029,7 @@ def test_extract_session_concepts_emits_repair_telemetry(
                         "name": "Schema validation",
                         "summary": "Explains output validation for tool results.",
                         "grading_reason": "Students should preserve structured outputs.",
+                        "concept_importance": 8,
                         "evidence": [
                             "Transport setup and schema validation keep integrations reliable."
                         ],
@@ -1084,6 +1101,7 @@ def test_extract_session_concepts_falls_back_when_primary_provider_is_invalid(
                         "name": "Tool registration",
                         "summary": "Explains how MCP tools are exposed to the runtime.",
                         "grading_reason": "Students should wire tool registration correctly.",
+                        "concept_importance": 9,
                         "evidence": [
                             "MCP tool registration connects tools to the runtime."
                         ],
@@ -1146,6 +1164,7 @@ def test_extract_session_concepts_falls_back_after_primary_provider_call_failure
                         "name": "Schema validation",
                         "summary": "Explains output validation for tool results.",
                         "grading_reason": "Students should preserve structured outputs.",
+                        "concept_importance": 8,
                         "evidence": [
                             "Transport setup and schema validation keep integrations reliable."
                         ],
@@ -1210,6 +1229,7 @@ def test_extract_session_concepts_falls_back_to_different_model_same_provider(
                         "name": "MCP transports",
                         "summary": "Explains how transports move MCP data.",
                         "grading_reason": "Students should configure transports correctly.",
+                        "concept_importance": 8,
                         "evidence": [
                             "Transport setup and schema validation keep integrations reliable."
                         ],
