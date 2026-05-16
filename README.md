@@ -4,7 +4,7 @@ ReviewPilot is an early bootstrap for an assignment review agent. The current re
 
 ## What is here now
 
-- `app/main.py`: FastAPI app with `GET /health`, `GET /allsessions`, `POST /sessions/{session_id}/extract-concepts`, `POST /sessions/{session_id}/extract-assignment-requirements`, `GET /sessions/{session_id}/submissions`, and `GET /students/{student_id}/submissions`
+- `app/main.py`: FastAPI app with `GET /health`, `GET /allsessions`, `POST /sessions/{session_id}/extract-concepts`, `POST /sessions/{session_id}/extract-assignment-requirements`, `POST /grade/concepts`, `GET /sessions/{session_id}/submissions`, and `GET /students/{student_id}/submissions`
 - `db/schema.sql`: SQLite schema for students, session content, assignment requirements, and submissions
 - `openapi/reviewpilot.openapi.yaml`: OpenAPI contract for the current HTTP endpoints
 - `DESIGN_SPEC.md`: target architecture and planned review flow
@@ -31,6 +31,7 @@ The app starts on `http://127.0.0.1:8000`. Available endpoints:
 - `GET /allsessions`
 - `POST /sessions/{session_id}/extract-concepts`
 - `POST /sessions/{session_id}/extract-assignment-requirements`
+- `POST /grade/concepts`
 - `GET /sessions/{session_id}/submissions`
 - `GET /students/{student_id}/submissions`
 
@@ -41,6 +42,15 @@ Session API telemetry is emitted as one JSON log line per event to server stdout
 `POST /sessions/{session_id}/extract-concepts` and
 `POST /sessions/{session_id}/extract-assignment-requirements`
 now share the same provider routing, schema validation, and repair flow.
+Successful concept extraction also persists the extracted concept list to
+`session_content.concepts_json`.
+Successful assignment requirement extraction also persists each assignment's
+extracted requirement list to `assignment_requirement.assignment_requirements_json`.
+`POST /grade/concepts` reuses the same structured extraction stack, but it
+collects bounded project evidence first and only falls back across configured
+real models. It does not fall back to the heuristic provider. Successful
+concept grading also persists the full grading response JSON to
+`student_grades.concept_grade`.
 
 Available provider modes:
 
@@ -71,6 +81,16 @@ Provider routing config:
     },
     "cooldown_seconds": 60,
     "failures_before_cooldown": 2
+  },
+  "concept_grading": {
+    "primary_provider": "anthropic",
+    "fallback_providers": ["gemini"],
+    "model_candidates": {
+      "anthropic": ["claude-sonnet-4-6"],
+      "gemini": ["gemini-2.5-flash"]
+    },
+    "cooldown_seconds": 60,
+    "failures_before_cooldown": 2
   }
 }
 ```
@@ -87,9 +107,14 @@ Environment variables still override the repo config when you need a one-off cha
 - `REVIEWPILOT_CONCEPT_PROVIDER`
 - `REVIEWPILOT_CONCEPT_MODEL`
 - `REVIEWPILOT_CONCEPT_FALLBACK_PROVIDERS`
+- `REVIEWPILOT_CONCEPT_GRADING_PROVIDER`
+- `REVIEWPILOT_CONCEPT_GRADING_MODEL`
+- `REVIEWPILOT_CONCEPT_GRADING_FALLBACK_PROVIDERS`
 - `REVIEWPILOT_ANTHROPIC_CONCEPT_MODELS`
 - `REVIEWPILOT_GEMINI_CONCEPT_MODELS`
 - `REVIEWPILOT_HEURISTIC_CONCEPT_MODELS`
+- `REVIEWPILOT_ANTHROPIC_CONCEPT_GRADING_MODELS`
+- `REVIEWPILOT_GEMINI_CONCEPT_GRADING_MODELS`
 - `REVIEWPILOT_PROVIDER_FAILURES_BEFORE_COOLDOWN`
 - `REVIEWPILOT_PROVIDER_COOLDOWN_SECONDS`
 

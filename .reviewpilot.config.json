@@ -18,5 +18,21 @@
     },
     "cooldown_seconds": 60,
     "failures_before_cooldown": 2
+  },
+  "concept_grading": {
+    "primary_provider": "anthropic",
+    "fallback_providers": [
+      "gemini"
+    ],
+    "model_candidates": {
+      "anthropic": [
+        "claude-sonnet-4-6"
+      ],
+      "gemini": [
+        "gemini-2.5-flash"
+      ]
+    },
+    "cooldown_seconds": 60,
+    "failures_before_cooldown": 2
   }
 }
