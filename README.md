@@ -4,7 +4,7 @@ ReviewPilot is an early bootstrap for an assignment review agent. The current re
 
 ## What is here now
 
-- `app/main.py`: FastAPI app with `GET /health`, `GET /allsessions`, `GET /sessions/{session_id}/concepts`, `PUT /sessions/{session_id}/concepts`, `POST /sessions/{session_id}/extract-concepts`, `GET /sessions/{session_id}/assignment-requirements`, `PUT /sessions/{session_id}/assignment-requirements`, `POST /sessions/{session_id}/extract-assignment-requirements`, `POST /grade/concepts`, `GET /sessions/{session_id}/submissions`, and `GET /students/{student_id}/submissions`
+- `app/main.py`: FastAPI app with `GET /health`, `GET /allsessions`, `GET /sessions/{session_id}/concepts`, `PUT /sessions/{session_id}/concepts`, `POST /sessions/{session_id}/extract-concepts`, `GET /sessions/{session_id}/assignment-requirements`, `PUT /sessions/{session_id}/assignment-requirements`, `POST /sessions/{session_id}/extract-assignment-requirements`, `POST /grade/concepts`, `POST /grade/assignment-requirements`, `GET /sessions/{session_id}/submissions`, and `GET /students/{student_id}/submissions`
 - `db/schema.sql`: SQLite schema for students, session content, assignment requirements, and submissions
 - `openapi/reviewpilot.openapi.yaml`: OpenAPI contract for the current HTTP endpoints
 - `DESIGN_SPEC.md`: target architecture and planned review flow
@@ -37,6 +37,7 @@ The app starts on `http://127.0.0.1:8000`. The browser UI redirects `/` to
 - `PUT /sessions/{session_id}/assignment-requirements`
 - `POST /sessions/{session_id}/extract-assignment-requirements`
 - `POST /grade/concepts`
+- `POST /grade/assignment-requirements`
 - `GET /sessions/{session_id}/submissions`
 - `GET /students/{student_id}/submissions`
 
@@ -51,11 +52,17 @@ Successful concept extraction also persists the extracted concept list to
 `session_content.concepts_json`.
 Successful assignment requirement extraction also persists each assignment's
 extracted requirement list to `assignment_requirement.assignment_requirements_json`.
-`POST /grade/concepts` reuses the same structured extraction stack, but it
-collects bounded project evidence first and only falls back across configured
-real models. It does not fall back to the heuristic provider. Successful
-concept grading also persists the extracted concept scores JSON to
-`student_grades.concept_scores`.
+`POST /grade/concepts` and `POST /grade/assignment-requirements` reuse the
+same structured extraction stack, but they collect bounded project evidence
+first and only fall back across configured real models. They do not fall back
+to the heuristic provider. Successful concept grading persists the extracted
+concept scores JSON to `student_grades.concept_scores` and updates
+`assignment_submissions.status` to `concepts_graded` when the submission is not
+already in a later review state. Successful assignment-requirement grading
+persists the extracted requirement scores JSON to
+`student_grades.assignment_requirement_scores` and updates
+`assignment_submissions.status` to `assignment_requirements_graded` when the
+submission is not already in a later review state.
 
 Available provider modes:
 

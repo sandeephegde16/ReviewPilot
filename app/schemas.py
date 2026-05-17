@@ -11,6 +11,14 @@ from pydantic import BaseModel, Field, model_validator
 ReasoningLevel = Literal["low", "medium", "high"]
 SubmissionSourceType = Literal["github_pr", "local_folder", "zip_upload"]
 CoverageLevel = Literal["missing", "weak", "partial", "strong"]
+SubmissionStatus = Literal[
+    "submitted",
+    "under_review",
+    "concepts_graded",
+    "assignment_requirements_graded",
+    "reviewed",
+    "needs_resubmission",
+]
 
 
 class SessionSummary(BaseModel):
@@ -122,6 +130,34 @@ class ConceptGradingCriterion(BaseModel):
     )
 
 
+def _validate_submission_source_fields(
+    *,
+    source_type: SubmissionSourceType,
+    repo_url: str | None,
+    local_path: str | None,
+    zip_path: str | None,
+) -> None:
+    """Require the source locator that matches the selected submission source type."""
+    if source_type == "github_pr":
+        if repo_url is None or local_path is not None or zip_path is not None:
+            raise ValueError(
+                "github_pr submissions require repo_url and must not include "
+                "local_path or zip_path."
+            )
+        return
+    if source_type == "local_folder":
+        if local_path is None or repo_url is not None or zip_path is not None:
+            raise ValueError(
+                "local_folder submissions require local_path and must not include "
+                "repo_url or zip_path."
+            )
+        return
+    if zip_path is None or repo_url is not None or local_path is not None:
+        raise ValueError(
+            "zip_upload submissions require zip_path and must not include repo_url or local_path."
+        )
+
+
 class GradeConceptsRequest(BaseModel):
     """Public request payload for project concept grading."""
 
@@ -154,24 +190,12 @@ class GradeConceptsRequest(BaseModel):
     @model_validator(mode="after")
     def validate_source_fields(self) -> GradeConceptsRequest:
         """Require the source locator that matches the selected source type."""
-        if self.source_type == "github_pr":
-            if self.repo_url is None or self.local_path is not None or self.zip_path is not None:
-                raise ValueError(
-                    "github_pr submissions require repo_url and must not include "
-                    "local_path or zip_path."
-                )
-        elif self.source_type == "local_folder":
-            if self.local_path is None or self.repo_url is not None or self.zip_path is not None:
-                raise ValueError(
-                    "local_folder submissions require local_path and must not include "
-                    "repo_url or zip_path."
-                )
-        else:
-            if self.zip_path is None or self.repo_url is not None or self.local_path is not None:
-                raise ValueError(
-                    "zip_upload submissions require zip_path and must not include "
-                    "repo_url or local_path."
-                )
+        _validate_submission_source_fields(
+            source_type=self.source_type,
+            repo_url=self.repo_url,
+            local_path=self.local_path,
+            zip_path=self.zip_path,
+        )
         return self
 
 
@@ -331,22 +355,72 @@ class StoredAssignmentRequirementResult(BaseModel):
         description="Unique identifier for the assignment requirement record."
     )
     assignment_title: str = Field(description="Stored title for the assignment.")
-    assignment_description: str | None = Field(
-        default=None,
-        description="Stored assignment description shown in the assignments workspace.",
-    )
-    due_at: str | None = Field(
-        default=None,
-        description="Stored due date for the assignment requirement, when available.",
-    )
-    required_deliverables: list[str] = Field(
-        default_factory=list,
-        description="Stored deliverables associated with the assignment requirement.",
-    )
     requirements: list[ExtractedAssignmentRequirement] = Field(
         default_factory=list,
         description="Stored requirements currently persisted for this assignment.",
     )
+
+
+class AssignmentRequirementGradingCriterion(BaseModel):
+    """One requested assignment requirement and its grading weight for project scoring."""
+
+    requirement_type: AssignmentRequirementType = Field(
+        description="Canonical category for the requested assignment requirement."
+    )
+    title: str = Field(description="Short assignment-requirement label that must be graded.")
+    summary: str = Field(description="Brief explanation of what the requirement covers.")
+    evidence: list[str] = Field(
+        description="Stored assignment evidence that justifies grading this requirement.",
+        min_length=1,
+    )
+    max_score: int = Field(
+        ge=1,
+        description="Maximum number of points available for this assignment requirement.",
+    )
+
+
+class GradeAssignmentRequirementsRequest(BaseModel):
+    """Public request payload for project assignment-requirement grading."""
+
+    student_id: str = Field(description="Unique identifier for the student being graded.")
+    session_id: str = Field(description="Unique identifier for the related session.")
+    assignment_requirement_id: str = Field(
+        description="Unique identifier for the assignment requirement being graded."
+    )
+    source_type: SubmissionSourceType = Field(
+        description="Submission source type used to collect project evidence."
+    )
+    repo_url: str | None = Field(
+        default=None,
+        description="Repository or pull request URL when the source type is github_pr.",
+    )
+    local_path: str | None = Field(
+        default=None,
+        description="Local folder path when the source type is local_folder.",
+    )
+    zip_path: str | None = Field(
+        default=None,
+        description="Zip archive path when the source type is zip_upload.",
+    )
+    reasoning_level: ReasoningLevel = Field(
+        default="medium",
+        description="Requested reasoning depth for assignment-requirement grading.",
+    )
+    requirements: list[AssignmentRequirementGradingCriterion] = Field(
+        min_length=1,
+        description="Assignment requirements that must be scored against the project evidence.",
+    )
+
+    @model_validator(mode="after")
+    def validate_source_fields(self) -> GradeAssignmentRequirementsRequest:
+        """Require the source locator that matches the selected source type."""
+        _validate_submission_source_fields(
+            source_type=self.source_type,
+            repo_url=self.repo_url,
+            local_path=self.local_path,
+            zip_path=self.zip_path,
+        )
+        return self
 
 
 class UpdateSessionAssignmentRequirementsRequest(BaseModel):
@@ -365,6 +439,36 @@ class SessionAssignmentRequirementsResponse(BaseModel):
     assignment_requirements: list[StoredAssignmentRequirementResult] = Field(
         default_factory=list,
         description="Stored assignment requirements currently persisted for the session.",
+    )
+
+
+class StoredSessionAssignment(BaseModel):
+    """Stored assignment metadata for one assignment row in the session."""
+
+    assignment_requirement_id: str = Field(
+        description="Unique identifier for the assignment requirement record."
+    )
+    assignment_title: str = Field(description="Stored title for the assignment.")
+    assignment_description: str = Field(
+        description="Stored assignment description shown in the assignments workspace."
+    )
+    due_at: str | None = Field(
+        default=None,
+        description="Stored due date for the assignment, when available.",
+    )
+    required_deliverables: list[str] = Field(
+        default_factory=list,
+        description="Stored deliverables associated with the assignment.",
+    )
+
+
+class SessionAssignmentsResponse(BaseModel):
+    """Public response payload for stored session assignment metadata."""
+
+    session_id: str = Field(description="Unique identifier for the session.")
+    assignments: list[StoredSessionAssignment] = Field(
+        default_factory=list,
+        description="Stored assignments currently persisted for the session.",
     )
 
 
@@ -498,6 +602,112 @@ class ConceptGradingSource(ConceptGradingContext):
     )
 
 
+class AssignmentRequirementScoreResult(BaseModel):
+    """One evidence-backed score awarded to a requested assignment requirement."""
+
+    requirement_title: str = Field(description="Assignment requirement label that was graded.")
+    requirement_type: AssignmentRequirementType = Field(
+        description="Canonical category for the graded assignment requirement."
+    )
+    score: int = Field(
+        ge=0,
+        description="Awarded score for the assignment requirement.",
+    )
+    max_score: int = Field(
+        ge=1,
+        description="Maximum number of points available for the assignment requirement.",
+    )
+    coverage_level: CoverageLevel = Field(
+        description="Strength of requirement coverage observed in the project evidence."
+    )
+    evidence: list[str] = Field(
+        description="Concrete project evidence supporting the awarded score.",
+        min_length=1,
+    )
+    deductions: list[str] = Field(
+        default_factory=list,
+        description="Reasons points were not awarded in full.",
+    )
+
+    @model_validator(mode="after")
+    def validate_score_range(self) -> AssignmentRequirementScoreResult:
+        """Ensure awarded scores never exceed the configured requirement maximum."""
+        if self.score > self.max_score:
+            raise ValueError("score must be less than or equal to max_score.")
+        return self
+
+
+class AssignmentRequirementGradingOutput(BaseModel):
+    """Validated structured output returned by the assignment-requirement grading provider."""
+
+    assignment_requirement_scores: list[AssignmentRequirementScoreResult] = Field(
+        description="Assignment-requirement scores derived from the collected project evidence.",
+        min_length=1,
+    )
+
+
+@lru_cache(maxsize=1)
+def _build_cached_assignment_requirement_grading_output_schema() -> dict[str, Any]:
+    """Cache the JSON schema used for structured assignment-requirement grading output."""
+    return _inline_local_json_schema_refs(AssignmentRequirementGradingOutput.model_json_schema())
+
+
+def get_assignment_requirement_grading_output_schema(
+    *,
+    max_assignment_requirement_scores: int | None = None,
+) -> dict[str, Any]:
+    """Return a provider schema for assignment-requirement grading with an optional item cap."""
+    schema = deepcopy(_build_cached_assignment_requirement_grading_output_schema())
+    if max_assignment_requirement_scores is not None:
+        schema["properties"]["assignment_requirement_scores"]["maxItems"] = (
+            max_assignment_requirement_scores
+        )
+    return schema
+
+
+class AssignmentRequirementGradingContext(BaseModel):
+    """Internal student, session, and assignment metadata used for requirement grading."""
+
+    submission_id: str = Field(description="Unique identifier for the submission being graded.")
+    student_id: str = Field(description="Unique identifier for the student.")
+    student_code: str = Field(description="Stable course-visible identifier for the student.")
+    student_full_name: str = Field(description="Full name of the student.")
+    session_id: str = Field(description="Unique identifier for the session.")
+    assignment_requirement_id: str = Field(
+        description="Unique identifier for the assignment requirement being graded."
+    )
+    assignment_title: str = Field(
+        description="Stored title for the assignment requirement being graded."
+    )
+    session_title: str = Field(description="Stored title for the related session.")
+    session_topic: str = Field(description="Stored topic summary for the related session.")
+    source_type: SubmissionSourceType = Field(description="Submission source type.")
+    repo_url: str | None = Field(
+        default=None,
+        description="Repository or pull request URL when the source type is github_pr.",
+    )
+    local_path: str | None = Field(
+        default=None,
+        description="Local folder path when the source type is local_folder.",
+    )
+    zip_path: str | None = Field(
+        default=None,
+        description="Zip archive path when the source type is zip_upload.",
+    )
+
+
+class AssignmentRequirementGradingSource(AssignmentRequirementGradingContext):
+    """Internal grading source passed into canonical assignment-requirement preparation."""
+
+    requirements: list[AssignmentRequirementGradingCriterion] = Field(
+        description="Requested assignment requirements for the submission.",
+        min_length=1,
+    )
+    project_evidence: ProjectEvidenceBundle = Field(
+        description="Collected evidence bundle prepared from the project source."
+    )
+
+
 class GradeConceptsResponse(BaseModel):
     """Public response payload for scored project concepts."""
 
@@ -520,6 +730,42 @@ class GradeConceptsResponse(BaseModel):
     )
     concept_scores: list[ConceptScoreResult] = Field(
         description="Evidence-backed scores for each requested concept.",
+        min_length=1,
+    )
+    warnings: list[ApiWarning] = Field(
+        default_factory=list,
+        description="Warnings describing any fallback behavior during grading.",
+    )
+
+
+class GradeAssignmentRequirementsResponse(BaseModel):
+    """Public response payload for scored project assignment requirements."""
+
+    student_id: str = Field(description="Unique identifier for the student.")
+    student_code: str = Field(description="Stable course-visible identifier for the student.")
+    student_full_name: str = Field(description="Full name of the student.")
+    session_id: str = Field(description="Unique identifier for the session.")
+    assignment_requirement_id: str = Field(
+        description="Unique identifier for the assignment requirement being graded."
+    )
+    assignment_title: str = Field(
+        description="Stored title for the assignment requirement being graded."
+    )
+    source_type: SubmissionSourceType = Field(description="Submission source type.")
+    repo_url: str | None = Field(
+        default=None,
+        description="Repository or pull request URL when the source type is github_pr.",
+    )
+    local_path: str | None = Field(
+        default=None,
+        description="Local folder path when the source type is local_folder.",
+    )
+    zip_path: str | None = Field(
+        default=None,
+        description="Zip archive path when the source type is zip_upload.",
+    )
+    assignment_requirement_scores: list[AssignmentRequirementScoreResult] = Field(
+        description="Evidence-backed scores for each requested assignment requirement.",
         min_length=1,
     )
     warnings: list[ApiWarning] = Field(
@@ -564,9 +810,7 @@ class SessionSubmission(BaseModel):
         default=None,
         description="Optional LinkedIn URL provided by the student.",
     )
-    status: Literal["submitted", "under_review", "reviewed", "needs_resubmission"] = Field(
-        description="Current review status for the submission."
-    )
+    status: SubmissionStatus = Field(description="Current review status for the submission.")
     submitted_at: str = Field(description="Submission timestamp stored in SQLite.")
     concept_scores: list[ConceptScoreResult] = Field(
         default_factory=list,
@@ -621,9 +865,7 @@ class StudentSubmission(BaseModel):
         default=None,
         description="Optional LinkedIn URL provided by the student.",
     )
-    status: Literal["submitted", "under_review", "reviewed", "needs_resubmission"] = Field(
-        description="Current review status for the submission."
-    )
+    status: SubmissionStatus = Field(description="Current review status for the submission.")
     submitted_at: str = Field(description="Submission timestamp stored in SQLite.")
 
 

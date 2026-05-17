@@ -125,6 +125,18 @@ const ASSIGNMENT_STATUS_ACCENTS = {
     shadow: "rgba(0, 0, 0, 0.12)",
     tint: "rgba(255, 255, 255, 0.01)",
   },
+  concepts_graded: {
+    accent: "#5da2ff",
+    border: "rgba(47, 50, 60, 0.95)",
+    shadow: "rgba(0, 0, 0, 0.12)",
+    tint: "rgba(255, 255, 255, 0.01)",
+  },
+  assignment_requirements_graded: {
+    accent: "#ff7c6d",
+    border: "rgba(47, 50, 60, 0.95)",
+    shadow: "rgba(0, 0, 0, 0.12)",
+    tint: "rgba(255, 255, 255, 0.01)",
+  },
   submitted: {
     accent: "#ff9f43",
     border: "rgba(47, 50, 60, 0.95)",
@@ -299,22 +311,40 @@ async function ensureSessionWorkspaceLoaded(sessionId) {
     return state.sessionWorkspaces.get(sessionId);
   }
 
-  const [requirementsDocument, submissions] = await Promise.all([
+  const [assignmentsDocument, requirementsDocument, submissions] = await Promise.all([
+    fetchJson(`/sessions/${sessionId}/assignments`),
     fetchJson(`/sessions/${sessionId}/assignment-requirements`),
     fetchJson(`/sessions/${sessionId}/submissions`),
   ]);
 
   const assignmentsById = new Map();
-  for (const assignment of requirementsDocument.assignment_requirements) {
+  for (const assignment of assignmentsDocument.assignments) {
     assignmentsById.set(assignment.assignment_requirement_id, {
       assignmentRequirementId: assignment.assignment_requirement_id,
       title: assignment.assignment_title,
-      description: assignment.assignment_description ?? "",
+      description: assignment.assignment_description,
       dueAt: assignment.due_at,
       requiredDeliverables: assignment.required_deliverables ?? [],
-      requirements: assignment.requirements ?? [],
+      requirements: [],
       submissions: [],
     });
+  }
+
+  for (const assignment of requirementsDocument.assignment_requirements) {
+    if (!assignmentsById.has(assignment.assignment_requirement_id)) {
+      assignmentsById.set(assignment.assignment_requirement_id, {
+        assignmentRequirementId: assignment.assignment_requirement_id,
+        title: assignment.assignment_title,
+        description: "",
+        dueAt: null,
+        requiredDeliverables: [],
+        requirements: [],
+        submissions: [],
+      });
+    }
+    const storedAssignment = assignmentsById.get(assignment.assignment_requirement_id);
+    storedAssignment.title = storedAssignment.title || assignment.assignment_title;
+    storedAssignment.requirements = assignment.requirements ?? [];
   }
 
   for (const submission of submissions) {
@@ -403,6 +433,8 @@ function buildSubmissionCounts(submissions) {
     total: submissions.length,
     submitted: 0,
     under_review: 0,
+    concepts_graded: 0,
+    assignment_requirements_graded: 0,
     reviewed: 0,
     needs_resubmission: 0,
   };
@@ -453,6 +485,12 @@ function getPrimaryStatus(assignment) {
   if (assignment.counts.needs_resubmission > 0) {
     return "needs_resubmission";
   }
+  if (assignment.counts.assignment_requirements_graded > 0) {
+    return "assignment_requirements_graded";
+  }
+  if (assignment.counts.concepts_graded > 0) {
+    return "concepts_graded";
+  }
   if (assignment.counts.under_review > 0) {
     return "under_review";
   }
@@ -466,6 +504,8 @@ function formatStatusLabel(status) {
   const labels = {
     no_submissions: "No submissions",
     needs_resubmission: "Needs resubmission",
+    assignment_requirements_graded: "Requirements graded",
+    concepts_graded: "Concepts graded",
     reviewed: "Reviewed",
     submitted: "Submitted",
     under_review: "Under review",
@@ -543,7 +583,13 @@ function matchesSubmissionFilter(submission, filterValue) {
     return true;
   }
   if (filterValue === "pending") {
-    return submission.status === "submitted" || submission.status === "under_review";
+    return (
+      submission.status === "submitted"
+      || submission.status === "under_review"
+      || submission.status === "concepts_graded"
+      || submission.status === "assignment_requirements_graded"
+      || submission.status === "needs_resubmission"
+    );
   }
   return submission.status === filterValue;
 }
@@ -1430,9 +1476,6 @@ function renderEditableAssignmentRequirementGroup(assignment, startIndex) {
       data-assignment-requirement-group
       data-assignment-requirement-id="${escapeAttribute(assignment.assignment_requirement_id)}"
       data-assignment-title="${escapeAttribute(assignment.assignment_title)}"
-      data-assignment-description="${escapeAttribute(assignment.assignment_description ?? "")}"
-      data-due-at="${escapeAttribute(assignment.due_at ?? "")}"
-      data-required-deliverables="${escapeAttribute(JSON.stringify(assignment.required_deliverables ?? []))}"
     >
       <div class="requirements-list" data-requirement-list>
         ${assignment.requirements
@@ -1757,6 +1800,12 @@ function getSubmissionStatusIcon(status) {
   }
   if (status === "needs_resubmission") {
     return "alertCircle";
+  }
+  if (status === "assignment_requirements_graded") {
+    return "circleCheck";
+  }
+  if (status === "concepts_graded") {
+    return "circleCheck";
   }
   if (status === "under_review") {
     return "loader";
@@ -2120,10 +2169,6 @@ function collectAssignmentRequirementsPutPayload() {
     assignment_requirements: groups.map((group, groupIndex) => ({
       assignment_requirement_id: group.getAttribute("data-assignment-requirement-id") ?? "",
       assignment_title: group.getAttribute("data-assignment-title") ?? "",
-      assignment_description:
-        normalizeOptionalField(group.getAttribute("data-assignment-description")) ?? null,
-      due_at: normalizeOptionalField(group.getAttribute("data-due-at")) ?? null,
-      required_deliverables: parseRequiredDeliverables(group),
       requirements: Array.from(group.querySelectorAll("[data-requirement-item]")).map(
         (item, itemIndex) => ({
           requirement_type: readRequiredField(
@@ -2149,16 +2194,6 @@ function collectAssignmentRequirementsPutPayload() {
       ),
     })),
   };
-}
-
-function parseRequiredDeliverables(group) {
-  const rawValue = group.getAttribute("data-required-deliverables") ?? "[]";
-  try {
-    const parsedValue = JSON.parse(rawValue);
-    return Array.isArray(parsedValue) ? parsedValue.map((item) => String(item)) : [];
-  } catch {
-    return [];
-  }
 }
 
 function readRequiredField(container, fieldName, label) {
@@ -2189,11 +2224,6 @@ function readEvidenceField(container, label) {
     throw new Error(`${label} must include at least one line.`);
   }
   return values;
-}
-
-function normalizeOptionalField(value) {
-  const normalizedValue = normalizeDisplayText(value ?? "");
-  return normalizedValue || null;
 }
 
 function setModalEditorStatus(statusElement, message, isError = false) {
@@ -2290,7 +2320,13 @@ async function renderGradesPage() {
     const assignments = await ensureAllAssignmentsLoaded();
     const reviewedCount = assignments.reduce((sum, assignment) => sum + assignment.counts.reviewed, 0);
     const pendingCount = assignments.reduce(
-      (sum, assignment) => sum + assignment.counts.submitted + assignment.counts.under_review + assignment.counts.needs_resubmission,
+      (sum, assignment) =>
+        sum
+        + assignment.counts.submitted
+        + assignment.counts.under_review
+        + assignment.counts.concepts_graded
+        + assignment.counts.assignment_requirements_graded
+        + assignment.counts.needs_resubmission,
       0,
     );
     dom.pageContent.innerHTML = `

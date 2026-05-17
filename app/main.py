@@ -26,6 +26,19 @@ from app.assignment_requirement_extraction_spec import (
 from app.assignment_requirement_extraction_spec import (
     DEFAULT_TOOL_NAME as DEFAULT_ASSIGNMENT_TOOL_NAME,
 )
+from app.assignment_requirement_grading_spec import (
+    ASSIGNMENT_REQUIREMENT_GRADING_SPEC,
+    prepare_assignment_requirement_grading,
+)
+from app.assignment_requirement_grading_spec import (
+    DEFAULT_REASONING_TYPE as DEFAULT_ASSIGNMENT_GRADING_REASONING_TYPE,
+)
+from app.assignment_requirement_grading_spec import (
+    DEFAULT_STEP_PREFIX as DEFAULT_ASSIGNMENT_GRADING_STEP_PREFIX,
+)
+from app.assignment_requirement_grading_spec import (
+    DEFAULT_TOOL_NAME as DEFAULT_ASSIGNMENT_GRADING_TOOL_NAME,
+)
 from app.assignment_requirement_store import (
     StoredAssignmentRequirementNotFoundError,
     save_assignment_requirement_requirements_json,
@@ -66,14 +79,18 @@ from app.project_evidence import (
 from app.schemas import (
     ApiError,
     ApiErrorResponse,
+    AssignmentRequirementGradingSource,
     ConceptGradingSource,
     ExtractAssignmentRequirementsRequest,
     ExtractAssignmentRequirementsResponse,
     ExtractConceptsRequest,
     ExtractConceptsResponse,
+    GradeAssignmentRequirementsRequest,
+    GradeAssignmentRequirementsResponse,
     GradeConceptsRequest,
     GradeConceptsResponse,
     SessionAssignmentRequirementsResponse,
+    SessionAssignmentsResponse,
     SessionConceptsResponse,
     SessionSubmission,
     SessionSummary,
@@ -84,11 +101,14 @@ from app.schemas import (
 from app.session_content_store import save_session_concepts_json
 from app.session_store import (
     AmbiguousStudentSubmissionError,
+    AssignmentRequirementNotFoundError,
     SessionNotFoundError,
     StudentNotFoundError,
     StudentSubmissionNotFoundError,
+    get_assignment_requirement_grading_context,
     get_concept_grading_context,
     get_session_assignment_requirements,
+    get_session_assignments,
     get_session_concepts,
     get_session_extraction_source,
     list_session_assignment_requirement_sources,
@@ -102,7 +122,10 @@ from app.structured_extraction import (
     StructuredExtractionSpec,
     execute_structured_extraction,
 )
-from app.student_grade_store import save_student_concept_scores
+from app.student_grade_store import (
+    save_student_assignment_requirement_scores,
+    save_student_concept_scores,
+)
 from app.telemetry import WorkflowTelemetryEmitter, emit_event
 from app.ui_routes import get_ui_static_directory, ui_router
 
@@ -614,6 +637,83 @@ def update_stored_session_concepts(
 
 
 @app.get(
+    "/sessions/{session_id}/assignments",
+    response_model=SessionAssignmentsResponse,
+    responses={404: {"model": ApiErrorResponse}, 500: {"model": ApiErrorResponse}},
+    tags=["sessions"],
+)
+def get_stored_session_assignments(
+    session_id: str,
+    x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
+) -> SessionAssignmentsResponse | JSONResponse:
+    """Return the stored assignment metadata document for one session."""
+    trace_id = x_trace_id or uuid4().hex
+    start_time = perf_counter()
+    request_telemetry = _build_request_telemetry(
+        trace_id=trace_id,
+        session_id=session_id,
+        tool_name="get_session_assignments",
+        reasoning_level=None,
+        reasoning_type=None,
+        step_prefix="get_session_assignments",
+    )
+    request_telemetry.emit(
+        step_suffix="request_received",
+        validation_status="pending",
+        retry_count=0,
+    )
+
+    try:
+        assignments_document = get_session_assignments(
+            database_path=get_database_path(),
+            session_id=session_id,
+            trace_id=trace_id,
+        )
+    except SessionNotFoundError:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="session_not_found",
+        )
+        return _build_error_response(
+            status_code=404,
+            code="session_not_found",
+            message="Unable to find the requested session.",
+            trace_id=trace_id,
+        )
+    except (sqlite3.Error, ValueError):
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="session_assignments_query_failed",
+        )
+        return _build_error_response(
+            status_code=500,
+            code="session_assignments_query_failed",
+            message="Unable to fetch the stored assignments for the session.",
+            trace_id=trace_id,
+        )
+
+    request_telemetry.emit(
+        step_suffix="assignments_fetched",
+        validation_status="passed",
+        retry_count=0,
+        details={"assignment_count": len(assignments_document.assignments)},
+    )
+    request_telemetry.emit(
+        step_suffix="request_completed",
+        validation_status="passed",
+        retry_count=0,
+        elapsed_ms=_elapsed_ms(start_time),
+    )
+    return assignments_document
+
+
+@app.get(
     "/sessions/{session_id}/assignment-requirements",
     response_model=SessionAssignmentRequirementsResponse,
     responses={404: {"model": ApiErrorResponse}, 500: {"model": ApiErrorResponse}},
@@ -1019,6 +1119,257 @@ def grade_submission_concepts(
         retry_count=extraction_result.retry_count,
     )
 
+    request_telemetry.emit(
+        step_suffix="request_completed",
+        provider_name=extraction_result.provider_name,
+        model_name=extraction_result.model_name,
+        validation_status="passed",
+        retry_count=extraction_result.retry_count,
+        elapsed_ms=_elapsed_ms(start_time),
+    )
+    return extraction_result.response
+
+
+@app.post(
+    "/grade/assignment-requirements",
+    response_model=GradeAssignmentRequirementsResponse,
+    responses={404: {"model": ApiErrorResponse}, 500: {"model": ApiErrorResponse}},
+    tags=["grading"],
+)
+def grade_submission_assignment_requirements(
+    request: Annotated[GradeAssignmentRequirementsRequest, Body()],
+    x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
+) -> GradeAssignmentRequirementsResponse | JSONResponse:
+    """Grade a student's project against requested assignment requirements."""
+    trace_id = x_trace_id or uuid4().hex
+    start_time = perf_counter()
+    request_telemetry = _build_request_telemetry(
+        trace_id=trace_id,
+        session_id=request.session_id,
+        tool_name=DEFAULT_ASSIGNMENT_GRADING_TOOL_NAME,
+        reasoning_level=request.reasoning_level,
+        reasoning_type=DEFAULT_ASSIGNMENT_GRADING_REASONING_TYPE,
+        step_prefix=DEFAULT_ASSIGNMENT_GRADING_STEP_PREFIX,
+    )
+    request_telemetry.emit(
+        step_suffix="request_received",
+        validation_status="pending",
+        retry_count=0,
+    )
+
+    try:
+        grading_context = get_assignment_requirement_grading_context(
+            database_path=get_database_path(),
+            student_id=request.student_id,
+            session_id=request.session_id,
+            assignment_requirement_id=request.assignment_requirement_id,
+            source_type=request.source_type,
+            repo_url=request.repo_url,
+            local_path=request.local_path,
+            zip_path=request.zip_path,
+            trace_id=trace_id,
+        )
+        request_telemetry.emit(
+            step_suffix="grading_context_fetched",
+            validation_status="passed",
+            retry_count=0,
+        )
+        request_telemetry.emit(
+            step_suffix="project_evidence_collection_started",
+            validation_status="pending",
+            retry_count=0,
+        )
+        project_evidence = collect_project_evidence(
+            source_type=request.source_type,
+            repo_url=request.repo_url,
+            local_path=request.local_path,
+            zip_path=request.zip_path,
+        )
+        request_telemetry.emit(
+            step_suffix="project_evidence_collected",
+            validation_status="passed",
+            retry_count=0,
+            details={
+                "project_file_count": len(project_evidence.file_inventory),
+                "documentation_snippet_count": len(project_evidence.documentation_snippets),
+                "implementation_snippet_count": len(project_evidence.implementation_snippets),
+                "test_snippet_count": len(project_evidence.test_snippets),
+            },
+        )
+        grading_source = AssignmentRequirementGradingSource(
+            **grading_context.model_dump(),
+            requirements=request.requirements,
+            project_evidence=project_evidence,
+        )
+        prepared_extraction = prepare_assignment_requirement_grading(
+            grading_source=grading_source,
+            reasoning_level=request.reasoning_level,
+        )
+        extraction_result = execute_structured_extraction(
+            spec=ASSIGNMENT_REQUIREMENT_GRADING_SPEC,
+            prepared=prepared_extraction,
+            trace_id=trace_id,
+        )
+    except StudentNotFoundError:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="student_not_found",
+        )
+        return _build_error_response(
+            status_code=404,
+            code="student_not_found",
+            message="Unable to find the requested student.",
+            trace_id=trace_id,
+        )
+    except SessionNotFoundError:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="session_not_found",
+        )
+        return _build_error_response(
+            status_code=404,
+            code="session_not_found",
+            message="Unable to find the requested session.",
+            trace_id=trace_id,
+        )
+    except AssignmentRequirementNotFoundError:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="assignment_requirement_not_found",
+        )
+        return _build_error_response(
+            status_code=404,
+            code="assignment_requirement_not_found",
+            message="Unable to find the requested assignment requirement.",
+            trace_id=trace_id,
+        )
+    except StudentSubmissionNotFoundError:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="student_submission_not_found",
+        )
+        return _build_error_response(
+            status_code=404,
+            code="student_submission_not_found",
+            message="Unable to find the student's submission for the requested assignment.",
+            trace_id=trace_id,
+        )
+    except AmbiguousStudentSubmissionError:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="student_submission_ambiguous",
+        )
+        return _build_error_response(
+            status_code=500,
+            code="student_submission_ambiguous",
+            message="Unable to resolve a unique student submission for the requested assignment.",
+            trace_id=trace_id,
+        )
+    except sqlite3.Error:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="assignment_requirement_grading_context_query_failed",
+        )
+        return _build_error_response(
+            status_code=500,
+            code="assignment_requirement_grading_context_query_failed",
+            message=(
+                "Unable to fetch the student and assignment data required for "
+                "assignment-requirement grading."
+            ),
+            trace_id=trace_id,
+        )
+    except ProjectEvidenceCollectionError as exc:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason=exc.code,
+        )
+        return _build_error_response(
+            status_code=500,
+            code=exc.code,
+            message=exc.message,
+            trace_id=trace_id,
+        )
+    except StructuredExtractionError as exc:
+        response_code = exc.code
+        response_message = exc.message
+        if exc.code in {"structured_extraction_failed", "no_provider_available"}:
+            response_code = "assignment_requirement_grading_provider_failed"
+            response_message = (
+                "Unable to grade the requested assignment requirements with the "
+                "configured providers."
+            )
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            provider_name=exc.provider_name,
+            model_name=exc.model_name,
+            validation_status="failed",
+            retry_count=exc.retry_count,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason=response_code,
+        )
+        return _build_error_response(
+            status_code=500,
+            code=response_code,
+            message=response_message,
+            trace_id=trace_id,
+        )
+
+    try:
+        save_student_assignment_requirement_scores(
+            database_path=get_database_path(),
+            session_id=grading_context.session_id,
+            submission_id=grading_context.submission_id,
+            assignment_requirement_scores=(
+                extraction_result.response.assignment_requirement_scores
+            ),
+            trace_id=trace_id,
+        )
+    except sqlite3.Error:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            provider_name=extraction_result.provider_name,
+            model_name=extraction_result.model_name,
+            validation_status="failed",
+            retry_count=extraction_result.retry_count,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="assignment_requirement_grading_persistence_failed",
+        )
+        return _build_error_response(
+            status_code=500,
+            code="assignment_requirement_grading_persistence_failed",
+            message="Unable to save assignment-requirement grading for the student submission.",
+            trace_id=trace_id,
+        )
+
+    request_telemetry.emit(
+        step_suffix="assignment_requirement_scores_persisted",
+        provider_name=extraction_result.provider_name,
+        model_name=extraction_result.model_name,
+        validation_status="passed",
+        retry_count=extraction_result.retry_count,
+    )
     request_telemetry.emit(
         step_suffix="request_completed",
         provider_name=extraction_result.provider_name,
