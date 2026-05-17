@@ -4,6 +4,12 @@ ReviewPilot is an evidence-backed assignment review system for transcript-driven
 
 The repository is built around one constraint: the LLM should interpret collected facts, but it should not invent them. Extraction, grading, persistence, and orchestration are all schema-driven and observable.
 
+## Demo Video
+
+Watch the walkthrough here:
+
+- [ReviewPilot demo on YouTube](https://youtu.be/qo6IjiadXlk)
+
 ## What This Repo Demonstrates
 
 This codebase is useful as a reference implementation for the following concepts:
