@@ -8,39 +8,37 @@ from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 
-from app.schemas import GradeConceptsResponse
+from app.schemas import ConceptScoreResult
 from app.telemetry import emit_event
 
 
-def save_student_concept_grade_json(
+def save_student_concept_scores(
     *,
     database_path: Path,
     session_id: str,
-    assignment_requirement_id: str,
-    student_id: str,
-    concept_grade_response: GradeConceptsResponse,
+    submission_id: str,
+    concept_scores: list[ConceptScoreResult],
     trace_id: str,
     review_id: str | None = None,
 ) -> None:
-    """Upsert the full concept grading response into student_grades.concept_grade."""
+    """Upsert persisted concept scores for one submission into student_grades."""
     start_time = perf_counter()
     emit_event(
         trace_id=trace_id,
         review_id=review_id,
         session_id=session_id,
-        step_name="save_student_concept_grade_json.query_started",
+        step_name="save_student_concept_scores.query_started",
         tool_name=None,
         data_store="sqlite",
         provider_name=None,
         validation_status="pending",
         retry_count=0,
-        details={
-            "student_id": student_id,
-            "assignment_requirement_id": assignment_requirement_id,
-        },
+        details={"submission_id": submission_id},
     )
-    concept_grade_json = json.dumps(concept_grade_response.model_dump(mode="json"))
-    grade_id = f"student-grade-{session_id}-{assignment_requirement_id}-{student_id}"
+    concept_scores_json = json.dumps(
+        [concept_score.model_dump(mode="json") for concept_score in concept_scores]
+    )
+    grade_id = f"student-grade-{submission_id}"
     created_at = datetime.now(UTC).isoformat()
     connection = sqlite3.connect(database_path)
     try:
@@ -48,23 +46,19 @@ def save_student_concept_grade_json(
             """
             INSERT INTO student_grades (
                 id,
-                session_content_id,
-                assignment_requirement_id,
-                student_id,
-                concept_grade,
-                assignment_requirement_grade,
-                rubric_grade,
+                submission_id,
+                concept_scores,
+                assignment_requirement_scores,
+                rubric_scores,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, '[]', '[]', ?)
-            ON CONFLICT (session_content_id, assignment_requirement_id, student_id)
-            DO UPDATE SET concept_grade = excluded.concept_grade
+            ) VALUES (?, ?, ?, '[]', '[]', ?)
+            ON CONFLICT (submission_id)
+            DO UPDATE SET concept_scores = excluded.concept_scores
             """,
             (
                 grade_id,
-                session_id,
-                assignment_requirement_id,
-                student_id,
-                concept_grade_json,
+                submission_id,
+                concept_scores_json,
                 created_at,
             ),
         )
@@ -76,7 +70,7 @@ def save_student_concept_grade_json(
             trace_id=trace_id,
             review_id=review_id,
             session_id=session_id,
-            step_name="save_student_concept_grade_json.query_failed",
+            step_name="save_student_concept_scores.query_failed",
             tool_name=None,
             data_store="sqlite",
             provider_name=None,
@@ -84,10 +78,7 @@ def save_student_concept_grade_json(
             retry_count=0,
             elapsed_ms=elapsed_ms,
             failure_reason=str(exc),
-            details={
-                "student_id": student_id,
-                "assignment_requirement_id": assignment_requirement_id,
-            },
+            details={"submission_id": submission_id},
         )
         raise
     finally:
@@ -98,7 +89,7 @@ def save_student_concept_grade_json(
         trace_id=trace_id,
         review_id=review_id,
         session_id=session_id,
-        step_name="save_student_concept_grade_json.query_completed",
+        step_name="save_student_concept_scores.query_completed",
         tool_name=None,
         data_store="sqlite",
         provider_name=None,
@@ -106,8 +97,7 @@ def save_student_concept_grade_json(
         retry_count=0,
         elapsed_ms=elapsed_ms,
         details={
-            "student_id": student_id,
-            "assignment_requirement_id": assignment_requirement_id,
-            "concept_score_count": len(concept_grade_response.concept_scores),
+            "submission_id": submission_id,
+            "concept_score_count": len(concept_scores),
         },
     )

@@ -130,14 +130,212 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /sessions/{session_id}/concepts:
+    get:
+      tags:
+      - sessions
+      summary: Get Stored Session Concepts
+      description: Return the stored concepts document persisted for one session.
+      operationId: get_stored_session_concepts_sessions__session_id__concepts_get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: X-Trace-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Trace-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionConceptsResponse'
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Not Found
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Internal Server Error
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - sessions
+      summary: Update Stored Session Concepts
+      description: Replace the stored concepts document persisted for one session.
+      operationId: update_stored_session_concepts_sessions__session_id__concepts_put
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: X-Trace-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Trace-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSessionConceptsRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionConceptsResponse'
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Not Found
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Internal Server Error
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /sessions/{session_id}/assignment-requirements:
+    get:
+      tags:
+      - sessions
+      summary: Get Stored Session Assignment Requirements
+      description: Return the stored assignment requirements document for one session.
+      operationId: get_stored_session_assignment_requirements_sessions__session_id__assignment_requirements_get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: X-Trace-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Trace-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionAssignmentRequirementsResponse'
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Not Found
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Internal Server Error
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - sessions
+      summary: Update Stored Session Assignment Requirements
+      description: Replace the stored assignment requirements document for one session.
+      operationId: update_stored_session_assignment_requirements_sessions__session_id__assignment_requirements_put
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: X-Trace-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Trace-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSessionAssignmentRequirementsRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionAssignmentRequirementsResponse'
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Not Found
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Internal Server Error
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /grade/concepts:
     post:
       tags:
       - grading
       summary: Grade Submission Concepts
       description: Grade a student's project against requested concepts using
-        collected project evidence and persist the grading payload to
-        student_grades.concept_grade.
+        collected project evidence and persist the concept scores payload to
+        student_grades.concept_scores.
       operationId: grade_submission_concepts_grade_concepts_post
       parameters:
       - name: X-Trace-Id
@@ -468,6 +666,36 @@ components:
       - concepts
       title: ExtractConceptsResponse
       description: Public response payload for extracted gradeable concepts.
+    SessionConceptsResponse:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+          description: Unique identifier for the session.
+        concepts:
+          items:
+            $ref: '#/components/schemas/GradeableConcept'
+          type: array
+          title: Concepts
+          description: Stored gradeable concepts currently persisted for the session.
+      type: object
+      required:
+      - session_id
+      - concepts
+      title: SessionConceptsResponse
+      description: Public response payload for the stored session concepts document.
+    UpdateSessionConceptsRequest:
+      properties:
+        concepts:
+          items:
+            $ref: '#/components/schemas/GradeableConcept'
+          type: array
+          title: Concepts
+          description: Stored gradeable concepts that should replace the session document.
+      type: object
+      title: UpdateSessionConceptsRequest
+      description: Public request payload for replacing the stored session concepts
+        document.
     ExtractedAssignmentRequirement:
       properties:
         requirement_type:
@@ -503,6 +731,75 @@ components:
       title: ExtractedAssignmentRequirement
       description: One evidence-backed assignment requirement extracted from assignment
         text.
+    StoredAssignmentRequirementResult:
+      properties:
+        assignment_requirement_id:
+          type: string
+          title: Assignment Requirement Id
+          description: Unique identifier for the assignment requirement record.
+        assignment_title:
+          type: string
+          title: Assignment Title
+          description: Stored title for the assignment.
+        assignment_description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Assignment Description
+          description: Stored assignment description shown in the assignments workspace.
+        due_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Due At
+          description: Stored due date for the assignment requirement, when available.
+        required_deliverables:
+          items:
+            type: string
+          type: array
+          title: Required Deliverables
+          description: Stored deliverables associated with the assignment requirement.
+        requirements:
+          items:
+            $ref: '#/components/schemas/ExtractedAssignmentRequirement'
+          type: array
+          title: Requirements
+          description: Stored requirements currently persisted for this assignment.
+      type: object
+      required:
+      - assignment_requirement_id
+      - assignment_title
+      title: StoredAssignmentRequirementResult
+      description: Stored requirements for one assignment row in the session.
+    SessionAssignmentRequirementsResponse:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+          description: Unique identifier for the session.
+        assignment_requirements:
+          items:
+            $ref: '#/components/schemas/StoredAssignmentRequirementResult'
+          type: array
+          title: Assignment Requirements
+          description: Stored assignment requirements currently persisted for the session.
+      type: object
+      required:
+      - session_id
+      title: SessionAssignmentRequirementsResponse
+      description: Public response payload for stored session assignment requirements.
+    UpdateSessionAssignmentRequirementsRequest:
+      properties:
+        assignment_requirements:
+          items:
+            $ref: '#/components/schemas/StoredAssignmentRequirementResult'
+          type: array
+          title: Assignment Requirements
+          description: Stored assignment requirements that should replace the session
+            document.
+      type: object
+      title: UpdateSessionAssignmentRequirementsRequest
+      description: Public request payload for replacing stored assignment requirements.
     ConceptGradingCriterion:
       properties:
         concept_name:
@@ -833,6 +1130,26 @@ components:
           type: string
           title: Submitted At
           description: Submission timestamp stored in SQLite.
+        concept_scores:
+          items:
+            $ref: '#/components/schemas/ConceptScoreResult'
+          type: array
+          title: Concept Scores
+          description: Persisted concept scores currently stored for the submission.
+        assignment_requirement_scores:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Assignment Requirement Scores
+          description: Persisted assignment-requirement scores currently stored for the submission.
+        rubric_scores:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Rubric Scores
+          description: Persisted rubric scores currently stored for the submission.
       type: object
       required:
       - submission_id
@@ -848,6 +1165,10 @@ components:
       description: Public response model for an assignment submission in a session.
     SessionSummary:
       properties:
+        session_id:
+          type: string
+          title: Session Id
+          description: Unique identifier for the session.
         session_title:
           type: string
           title: Session Title
@@ -858,6 +1179,7 @@ components:
           description: Stored topic summary for the session.
       type: object
       required:
+      - session_id
       - session_title
       - session_topic
       title: SessionSummary

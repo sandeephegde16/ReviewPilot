@@ -16,6 +16,7 @@ CoverageLevel = Literal["missing", "weak", "partial", "strong"]
 class SessionSummary(BaseModel):
     """Public response model for a session summary."""
 
+    session_id: str = Field(description="Unique identifier for the session.")
     session_title: str = Field(description="Stored title for the session.")
     session_topic: str = Field(description="Stored topic summary for the session.")
 
@@ -226,6 +227,25 @@ class ExtractConceptsResponse(BaseModel):
     )
 
 
+class UpdateSessionConceptsRequest(BaseModel):
+    """Public request payload for replacing the stored session concepts document."""
+
+    concepts: list[GradeableConcept] = Field(
+        default_factory=list,
+        description="Stored gradeable concepts that should replace the session document.",
+    )
+
+
+class SessionConceptsResponse(BaseModel):
+    """Public response payload for the stored session concepts document."""
+
+    session_id: str = Field(description="Unique identifier for the session.")
+    concepts: list[GradeableConcept] = Field(
+        default_factory=list,
+        description="Stored gradeable concepts currently persisted for the session.",
+    )
+
+
 AssignmentRequirementType = Literal[
     "mandatory_deliverable",
     "forbidden_project_type",
@@ -301,6 +321,50 @@ class ExtractAssignmentRequirementsResponse(BaseModel):
     warnings: list[ApiWarning] = Field(
         default_factory=list,
         description="Warnings describing any fallback behavior during extraction.",
+    )
+
+
+class StoredAssignmentRequirementResult(BaseModel):
+    """Stored requirements for one assignment row in the session."""
+
+    assignment_requirement_id: str = Field(
+        description="Unique identifier for the assignment requirement record."
+    )
+    assignment_title: str = Field(description="Stored title for the assignment.")
+    assignment_description: str | None = Field(
+        default=None,
+        description="Stored assignment description shown in the assignments workspace.",
+    )
+    due_at: str | None = Field(
+        default=None,
+        description="Stored due date for the assignment requirement, when available.",
+    )
+    required_deliverables: list[str] = Field(
+        default_factory=list,
+        description="Stored deliverables associated with the assignment requirement.",
+    )
+    requirements: list[ExtractedAssignmentRequirement] = Field(
+        default_factory=list,
+        description="Stored requirements currently persisted for this assignment.",
+    )
+
+
+class UpdateSessionAssignmentRequirementsRequest(BaseModel):
+    """Public request payload for replacing stored assignment requirements."""
+
+    assignment_requirements: list[StoredAssignmentRequirementResult] = Field(
+        default_factory=list,
+        description="Stored assignment requirements that should replace the session document.",
+    )
+
+
+class SessionAssignmentRequirementsResponse(BaseModel):
+    """Public response payload for stored session assignment requirements."""
+
+    session_id: str = Field(description="Unique identifier for the session.")
+    assignment_requirements: list[StoredAssignmentRequirementResult] = Field(
+        default_factory=list,
+        description="Stored assignment requirements currently persisted for the session.",
     )
 
 
@@ -397,6 +461,7 @@ class ProjectEvidenceBundle(BaseModel):
 class ConceptGradingContext(BaseModel):
     """Internal student, session, and source metadata used for concept grading."""
 
+    submission_id: str = Field(description="Unique identifier for the submission being graded.")
     student_id: str = Field(description="Unique identifier for the student.")
     student_code: str = Field(description="Stable course-visible identifier for the student.")
     student_full_name: str = Field(description="Full name of the student.")
@@ -503,6 +568,18 @@ class SessionSubmission(BaseModel):
         description="Current review status for the submission."
     )
     submitted_at: str = Field(description="Submission timestamp stored in SQLite.")
+    concept_scores: list[ConceptScoreResult] = Field(
+        default_factory=list,
+        description="Persisted concept scores currently stored for the submission.",
+    )
+    assignment_requirement_scores: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Persisted assignment-requirement scores currently stored for the submission.",
+    )
+    rubric_scores: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Persisted rubric scores currently stored for the submission.",
+    )
 
 
 class StudentSubmission(BaseModel):

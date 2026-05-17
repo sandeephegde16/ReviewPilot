@@ -247,6 +247,165 @@ def _build_test_database(database_path: Path) -> None:
                 ),
             ],
         )
+        connection.execute(
+            """
+            INSERT INTO student_grades (
+                id,
+                submission_id,
+                concept_scores,
+                assignment_requirement_scores,
+                rubric_scores,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "student-grade-submission-capstone",
+                "submission-capstone",
+                json.dumps(
+                    [
+                        {
+                            "concept": "Tool registration",
+                            "score": 8,
+                            "max_score": 9,
+                            "coverage_level": "strong",
+                            "evidence": [
+                                "The walkthrough demonstrates MCP tool registration end to end."
+                            ],
+                            "deductions": ["Schema validation detail is brief."],
+                        }
+                    ]
+                ),
+                json.dumps(
+                    [
+                        {
+                            "requirement_title": "Walkthrough evidence",
+                            "score": 4,
+                            "max_score": 5,
+                            "evidence": [
+                                "The submitted demo covers the full review pilot flow."
+                            ],
+                        }
+                    ]
+                ),
+                json.dumps(
+                    [
+                        {
+                            "criterion": "delivery",
+                            "score": 5,
+                            "max_score": 5,
+                            "evidence": ["The demo recording is complete and clear."],
+                        }
+                    ]
+                ),
+                "2026-05-13T11:00:00+05:30",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _build_stored_concepts_fixture() -> list[dict[str, object]]:
+    """Return a stable stored concepts document used by document API tests."""
+    return [
+        {
+            "name": "Tool registration",
+            "summary": "Explains how MCP tools are exposed to the runtime.",
+            "grading_reason": "Students should be able to wire tools correctly.",
+            "concept_importance": 9,
+            "evidence": ["MCP tool registration connects tools to the runtime."],
+        },
+        {
+            "name": "Schema validation",
+            "summary": "Covers validating structured inputs and outputs.",
+            "grading_reason": "Students should validate tool contracts.",
+            "concept_importance": 8,
+            "evidence": ["Schema validation keeps integrations reliable."],
+        },
+    ]
+
+
+def _build_stored_assignment_requirements_fixture() -> list[dict[str, object]]:
+    """Return a stable stored assignment requirements document for API tests."""
+    return [
+        {
+            "assignment_requirement_id": "assignment-mcp",
+            "assignment_title": "MCP Integration Project",
+            "assignment_description": "Wire an MCP-backed workflow.",
+            "due_at": "2026-05-21T23:59:59+05:30",
+            "required_deliverables": ["repo", "tests"],
+            "requirements": [
+                {
+                    "requirement_type": "mandatory_deliverable",
+                    "title": "Repository submission",
+                    "summary": "Submit a repository that contains the MCP workflow implementation.",
+                    "evidence": ["Wire an MCP-backed workflow."],
+                }
+            ],
+        },
+        {
+            "assignment_requirement_id": "assignment-capstone",
+            "assignment_title": "Capstone Demo",
+            "assignment_description": "Submit a full review pilot walkthrough.",
+            "due_at": "2026-05-22T23:59:59+05:30",
+            "required_deliverables": ["repo", "video"],
+            "requirements": [
+                {
+                    "requirement_type": "evidence_expectation",
+                    "title": "Walkthrough evidence",
+                    "summary": (
+                        "Provide a walkthrough that demonstrates the full review "
+                        "pilot flow."
+                    ),
+                    "evidence": ["Submit a full review pilot walkthrough."],
+                }
+            ],
+        },
+    ]
+
+
+def _seed_session_concepts_json(
+    *,
+    database_path: Path,
+    session_id: str,
+    concepts: list[dict[str, object]],
+) -> None:
+    """Seed one session row with a valid stored concepts JSON document."""
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.execute(
+            """
+            UPDATE session_content
+            SET concepts_json = ?
+            WHERE id = ?
+            """,
+            (json.dumps(concepts), session_id),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _seed_assignment_requirements_json(
+    *,
+    database_path: Path,
+    assignment_requirements: list[dict[str, object]],
+) -> None:
+    """Seed assignment_requirement rows with stored requirements JSON documents."""
+    connection = sqlite3.connect(database_path)
+    try:
+        for assignment_requirement in assignment_requirements:
+            connection.execute(
+                """
+                UPDATE assignment_requirement
+                SET assignment_requirements_json = ?
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(assignment_requirement["requirements"]),
+                    assignment_requirement["assignment_requirement_id"],
+                ),
+            )
         connection.commit()
     finally:
         connection.close()
@@ -378,7 +537,41 @@ class _RaisingConceptProvider:
         )
 
 
-def test_get_all_sessions_returns_session_titles_and_topics(
+def test_root_redirects_to_assignments(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """GET / should redirect browsers into the assignments workspace."""
+    database_path = tmp_path / "reviewpilot.db"
+    _build_test_database(database_path)
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/assignments"
+
+
+def test_assignments_page_serves_html_shell(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """GET /assignments should serve the browser application shell."""
+    database_path = tmp_path / "reviewpilot.db"
+    _build_test_database(database_path)
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.get("/assignments")
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "<title>Axiom</title>" in response.text
+    assert "Assignments" in response.text
+
+
+def test_get_all_sessions_returns_session_titles_topics_and_ids(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -393,14 +586,17 @@ def test_get_all_sessions_returns_session_titles_and_topics(
     assert response.status_code == 200
     assert response.json() == [
         {
+            "session_id": "session-empty",
             "session_title": "Observability",
             "session_topic": "Tracing review workflows",
         },
         {
+            "session_id": "session-newer",
             "session_title": "Advanced MCP",
             "session_topic": "MCP transports and tool registration",
         },
         {
+            "session_id": "session-older",
             "session_title": "Foundations",
             "session_topic": "Intro to agent workflows",
         },
@@ -1975,6 +2171,225 @@ def test_extract_session_assignment_requirements_emits_structured_telemetry(
     assert telemetry_events[12]["details"] == {"assignment_requirement_count": 1}
 
 
+def test_get_session_concepts_returns_stored_document(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """GET /sessions/{session_id}/concepts should return the stored concepts document."""
+    database_path = tmp_path / "reviewpilot.db"
+    concepts = _build_stored_concepts_fixture()
+    _build_test_database(database_path)
+    _seed_session_concepts_json(
+        database_path=database_path,
+        session_id="session-newer",
+        concepts=concepts,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.get(
+        "/sessions/session-newer/concepts",
+        headers={"X-Trace-Id": "trace-get-concepts"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "session_id": "session-newer",
+        "concepts": concepts,
+    }
+
+
+def test_update_session_concepts_persists_request_document(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """PUT /sessions/{session_id}/concepts should replace the stored concepts JSON."""
+    database_path = tmp_path / "reviewpilot.db"
+    concepts = _build_stored_concepts_fixture()
+    _build_test_database(database_path)
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.put(
+        "/sessions/session-newer/concepts",
+        json={
+            "session_id": "session-newer",
+            "concepts": concepts,
+        },
+        headers={"X-Trace-Id": "trace-update-concepts"},
+    )
+
+    assert response.status_code == 200
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            """
+            SELECT concepts_json
+            FROM session_content
+            WHERE id = ?
+            """,
+            ("session-newer",),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert row is not None
+    assert json.loads(row[0]) == concepts
+    assert response.json() == {
+        "session_id": "session-newer",
+        "concepts": concepts,
+    }
+
+
+def test_get_session_assignment_requirements_returns_stored_document(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """GET /sessions/{session_id}/assignment-requirements should return stored JSON."""
+    database_path = tmp_path / "reviewpilot.db"
+    assignment_requirements = _build_stored_assignment_requirements_fixture()
+    _build_test_database(database_path)
+    _seed_assignment_requirements_json(
+        database_path=database_path,
+        assignment_requirements=assignment_requirements,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.get(
+        "/sessions/session-newer/assignment-requirements",
+        headers={"X-Trace-Id": "trace-get-assignment-doc"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "session_id": "session-newer",
+        "assignment_requirements": assignment_requirements,
+    }
+
+
+def test_update_session_assignment_requirements_persists_request_document(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """PUT /sessions/{session_id}/assignment-requirements should replace stored JSON."""
+    database_path = tmp_path / "reviewpilot.db"
+    assignment_requirements = [
+        {
+            "assignment_requirement_id": "assignment-mcp",
+            "assignment_title": "MCP Integration Project",
+            "requirements": [
+                {
+                    "requirement_type": "mandatory_deliverable",
+                    "title": "Repository submission",
+                    "summary": "Submit the repository with the MCP-backed workflow.",
+                    "evidence": ["Wire an MCP-backed workflow."],
+                }
+            ],
+        },
+        {
+            "assignment_requirement_id": "assignment-capstone",
+            "assignment_title": "Capstone Demo",
+            "requirements": [],
+        },
+    ]
+    _build_test_database(database_path)
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+    expected_assignment_requirements = [
+        {
+            "assignment_requirement_id": "assignment-mcp",
+            "assignment_title": "MCP Integration Project",
+            "assignment_description": "Wire an MCP-backed workflow.",
+            "due_at": "2026-05-21T23:59:59+05:30",
+            "required_deliverables": ["repo", "tests"],
+            "requirements": [
+                {
+                    "requirement_type": "mandatory_deliverable",
+                    "title": "Repository submission",
+                    "summary": "Submit the repository with the MCP-backed workflow.",
+                    "evidence": ["Wire an MCP-backed workflow."],
+                }
+            ],
+        },
+        {
+            "assignment_requirement_id": "assignment-capstone",
+            "assignment_title": "Capstone Demo",
+            "assignment_description": "Submit a full review pilot walkthrough.",
+            "due_at": "2026-05-22T23:59:59+05:30",
+            "required_deliverables": ["repo", "video"],
+            "requirements": [],
+        },
+    ]
+
+    response = client.put(
+        "/sessions/session-newer/assignment-requirements",
+        json={
+            "session_id": "session-newer",
+            "assignment_requirements": assignment_requirements,
+        },
+        headers={"X-Trace-Id": "trace-update-assignment-doc"},
+    )
+
+    assert response.status_code == 200
+    connection = sqlite3.connect(database_path)
+    try:
+        rows = connection.execute(
+            """
+            SELECT id, assignment_requirements_json
+            FROM assignment_requirement
+            WHERE session_content_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            ("session-newer",),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert {row[0]: json.loads(row[1]) for row in rows} == {
+        "assignment-mcp": assignment_requirements[0]["requirements"],
+        "assignment-capstone": assignment_requirements[1]["requirements"],
+    }
+    assert response.json() == {
+        "session_id": "session-newer",
+        "assignment_requirements": expected_assignment_requirements,
+    }
+
+
+def test_update_session_assignment_requirements_returns_404_for_missing_assignment_row(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """PUT assignment requirements should reject unknown assignment rows for a session."""
+    database_path = tmp_path / "reviewpilot.db"
+    _build_test_database(database_path)
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.put(
+        "/sessions/session-newer/assignment-requirements",
+        json={
+            "assignment_requirements": [
+                {
+                    "assignment_requirement_id": "assignment-missing",
+                    "assignment_title": "Missing Assignment",
+                    "requirements": [],
+                }
+            ],
+        },
+        headers={"X-Trace-Id": "trace-update-assignment-missing-row"},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {
+            "code": "assignment_requirement_not_found",
+            "message": "Unable to find one or more assignment requirements for the session.",
+            "trace_id": "trace-update-assignment-missing-row",
+        }
+    }
+
+
 def test_grade_submission_concepts_returns_scores_for_local_folder(
     monkeypatch,
     tmp_path: Path,
@@ -2090,11 +2505,11 @@ def test_grade_submission_concepts_returns_scores_for_local_folder(
     assert "test_binary_search_handles_empty_list" in provider_request.project_evidence_summary
 
 
-def test_grade_submission_concepts_persists_concept_grade_json(
+def test_grade_submission_concepts_persists_concept_scores_json(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    """Successful concept grading should upsert student_grades.concept_grade."""
+    """Successful concept grading should upsert student_grades.concept_scores."""
     database_path = tmp_path / "reviewpilot.db"
     project_root = _build_test_project_folder(tmp_path / "student-project")
     _build_test_database(database_path)
@@ -2156,19 +2571,17 @@ def test_grade_submission_concepts_persists_concept_grade_json(
     try:
         row = connection.execute(
             """
-            SELECT concept_grade
+            SELECT concept_scores
             FROM student_grades
-            WHERE session_content_id = ?
-              AND assignment_requirement_id = ?
-              AND student_id = ?
+            WHERE submission_id = ?
             """,
-            ("session-newer", "assignment-mcp", "student-ada"),
+            ("submission-mcp",),
         ).fetchone()
     finally:
         connection.close()
 
     assert row is not None
-    assert json.loads(row[0]) == response.json()
+    assert json.loads(row[0]) == response.json()["concept_scores"]
 
 
 def test_grade_submission_concepts_falls_back_to_second_real_model(
@@ -2372,7 +2785,7 @@ def test_grade_submission_concepts_returns_structured_error_when_persistence_fai
     )
     monkeypatch.setattr(
         main_module,
-        "save_student_concept_grade_json",
+        "save_student_concept_scores",
         _raise_persistence_failure,
     )
     monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
@@ -2497,13 +2910,14 @@ def test_grade_submission_concepts_emits_structured_telemetry(
         "grade_submission_concepts.provider_call_completed",
         "grade_submission_concepts.schema_validation_passed",
         "grade_submission_concepts.completed",
-        "save_student_concept_grade_json.query_started",
-        "save_student_concept_grade_json.query_completed",
-        "grade_submission_concepts.concept_grade_persisted",
+        "save_student_concept_scores.query_started",
+        "save_student_concept_scores.query_completed",
+        "grade_submission_concepts.concept_scores_persisted",
         "grade_submission_concepts.request_completed",
     ]
     assert telemetry_events[5]["details"]["project_file_count"] >= 3
     assert telemetry_events[6]["details"] == {
+        "submission_id": "submission-mcp",
         "session_id": "session-newer",
         "student_id": "student-ada",
         "operation_name": "grade_submission_concepts",
@@ -2523,8 +2937,7 @@ def test_grade_submission_concepts_emits_structured_telemetry(
         "provider_reasoning_type": None,
     }
     assert telemetry_events[14]["details"] == {
-        "student_id": "student-ada",
-        "assignment_requirement_id": "assignment-mcp",
+        "submission_id": "submission-mcp",
         "concept_score_count": 1,
     }
 
@@ -2562,6 +2975,36 @@ def test_get_session_submissions_returns_all_submissions_for_session(
             "linkedin_url": "https://linkedin.com/in/grace-hopper",
             "status": "under_review",
             "submitted_at": "2026-05-13T10:30:00+05:30",
+            "concept_scores": [
+                {
+                    "concept": "Tool registration",
+                    "score": 8,
+                    "max_score": 9,
+                    "coverage_level": "strong",
+                    "evidence": [
+                        "The walkthrough demonstrates MCP tool registration end to end."
+                    ],
+                    "deductions": ["Schema validation detail is brief."],
+                }
+            ],
+            "assignment_requirement_scores": [
+                {
+                    "requirement_title": "Walkthrough evidence",
+                    "score": 4,
+                    "max_score": 5,
+                    "evidence": [
+                        "The submitted demo covers the full review pilot flow."
+                    ],
+                }
+            ],
+            "rubric_scores": [
+                {
+                    "criterion": "delivery",
+                    "score": 5,
+                    "max_score": 5,
+                    "evidence": ["The demo recording is complete and clear."],
+                }
+            ],
         },
         {
             "submission_id": "submission-mcp",
@@ -2579,6 +3022,9 @@ def test_get_session_submissions_returns_all_submissions_for_session(
             "linkedin_url": "https://linkedin.com/in/ada-lovelace",
             "status": "submitted",
             "submitted_at": "2026-05-12T17:15:00+05:30",
+            "concept_scores": [],
+            "assignment_requirement_scores": [],
+            "rubric_scores": [],
         },
     ]
 
