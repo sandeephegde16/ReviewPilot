@@ -86,9 +86,14 @@ def prepare_concept_grading(
             "Score each requested concept independently against the project evidence.",
             "Return one concept_scores entry for each requested concept.",
             "Each concept entry must use the exact requested concept_name as concept.",
-            "Set score as an integer from 0 to max_score for that requested concept.",
-            "Set coverage_level to one of missing, weak, partial, or strong.",
             "Use only the collected project evidence and do not invent facts.",
+            "Be lenient when the project shows reasonable intent or partial implementation.",
+            "Prefer partial credit over harsh deductions when evidence is directionally correct.",
+            "Set score as an integer multiple of 5 from 25 to max_score.",
+            "Round scores up to the next multiple of 5. Examples: 33 becomes 35. 36 becomes 40.",
+            (
+                "Set coverage_level to one of missing, weak, partial, or strong."
+            ),
             "Evidence entries must quote or closely paraphrase concrete project details.",
             "Deductions must explain missing or weak coverage when full points are not awarded.",
         ],
@@ -98,15 +103,15 @@ def prepare_concept_grading(
                 "Each entry must include concept, score, max_score, coverage_level, "
                 "evidence, and deductions."
             ),
-            "score must be less than or equal to max_score.",
+            "score must be a multiple of 5, at least 25, and less than or equal to max_score.",
         ],
         repair_output_example={
             "concept_scores": [
                 {
                     "concept": "time complexity",
-                    "score": 4,
-                    "max_score": 5,
-                    "coverage_level": "strong",
+                    "score": 35,
+                    "max_score": 50,
+                    "coverage_level": "partial",
                     "evidence": [
                         "README explains O(log n) search complexity.",
                         "Code implements binary search rather than linear scan.",

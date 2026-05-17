@@ -11,6 +11,7 @@ from typing import Any
 from app.schemas import (
     AssignmentRequirementExtractionSource,
     AssignmentRequirementGradingContext,
+    AssignmentRequirementScoreResult,
     ConceptGradingContext,
     ConceptScoreResult,
     ExtractedAssignmentRequirement,
@@ -1263,15 +1264,30 @@ def _build_session_submission(row: sqlite3.Row) -> SessionSubmission:
             field_name="concept_scores",
         )
     ]
-    submission_payload["assignment_requirement_scores"] = _load_json_object_array(
-        raw_json=str(row["assignment_requirement_scores"]),
-        field_name="assignment_requirement_scores",
-    )
+    submission_payload["assignment_requirement_scores"] = [
+        _normalize_assignment_requirement_score_item(score_item)
+        for score_item in _load_json_object_array(
+            raw_json=str(row["assignment_requirement_scores"]),
+            field_name="assignment_requirement_scores",
+        )
+    ]
     submission_payload["rubric_scores"] = _load_json_object_array(
         raw_json=str(row["rubric_scores"]),
         field_name="rubric_scores",
     )
     return SessionSubmission.model_validate(submission_payload)
+
+
+def _normalize_assignment_requirement_score_item(
+    score_item: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize stored requirement-score rows while tolerating malformed legacy entries."""
+    try:
+        return AssignmentRequirementScoreResult.model_validate(score_item).model_dump(
+            mode="json"
+        )
+    except ValueError:
+        return score_item
 
 
 def list_student_submissions(

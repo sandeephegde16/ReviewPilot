@@ -1079,6 +1079,20 @@ a {
   cursor: not-allowed;
 }
 
+.submission-grade-button.is-loading,
+.submission-grade-button.is-loading:disabled {
+  border-color: rgba(93, 162, 255, 0.34);
+  background: rgba(93, 162, 255, 0.14);
+  color: #8cc0ff;
+}
+
+.submission-grade-button.is-blocked:disabled {
+  border-color: #242830;
+  background: #13151a;
+  color: #666b78;
+  opacity: 0.72;
+}
+
 .submission-grade-button.is-success {
   border-color: rgba(57, 163, 114, 0.32);
   background: rgba(57, 163, 114, 0.1);
@@ -1299,6 +1313,40 @@ a {
 .assignment-modal-meta {
   margin-top: 18px;
   justify-content: flex-start;
+}
+
+.submission-detail-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 18px;
+}
+
+.submission-detail-toolbar-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.submission-detail-action-stack {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.submission-detail-action-stack .submission-grade-button {
+  min-height: 32px;
+  padding: 0 12px;
+}
+
+.submission-detail-action-stack .submission-action-feedback {
+  max-width: 180px;
 }
 
 .assignment-modal-body {
@@ -1998,6 +2046,18 @@ a {
 
   .submission-score-overview {
     grid-template-columns: 1fr;
+  }
+
+  .submission-detail-toolbar {
+    justify-content: flex-start;
+  }
+
+  .submission-detail-toolbar-actions {
+    justify-content: flex-start;
+  }
+
+  .submission-detail-action-stack {
+    align-items: flex-start;
   }
 }
 

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable
 from time import perf_counter
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import uuid4
 
 from fastapi import Body, FastAPI, Header
@@ -72,6 +73,13 @@ from app.concept_grading_spec import (
 )
 from app.config import get_database_path
 from app.logging_config import configure_logging
+from app.orchestrator_service import run_review_orchestrator
+from app.orchestrator_spec import (
+    DEFAULT_REASONING_TYPE as DEFAULT_ORCHESTRATOR_REASONING_TYPE,
+)
+from app.orchestrator_spec import (
+    DEFAULT_TOOL_NAME as DEFAULT_ORCHESTRATOR_TOOL_NAME,
+)
 from app.project_evidence import (
     ProjectEvidenceCollectionError,
     collect_project_evidence,
@@ -89,6 +97,8 @@ from app.schemas import (
     GradeAssignmentRequirementsResponse,
     GradeConceptsRequest,
     GradeConceptsResponse,
+    RunReviewOrchestratorRequest,
+    RunReviewOrchestratorResponse,
     SessionAssignmentRequirementsResponse,
     SessionAssignmentsResponse,
     SessionConceptsResponse,
@@ -131,7 +141,25 @@ from app.ui_routes import get_ui_static_directory, ui_router
 
 configure_logging()
 
-app = FastAPI(title="ReviewPilot", version="0.1.0")
+
+class PrettyJSONResponse(JSONResponse):
+    """Render JSON responses with indentation for easier browser inspection."""
+
+    def render(self, content: Any) -> bytes:
+        """Serialize response content using a stable, human-readable JSON layout."""
+        return json.dumps(
+            content,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=2,
+        ).encode("utf-8")
+
+
+app = FastAPI(
+    title="ReviewPilot",
+    version="0.1.0",
+    default_response_class=PrettyJSONResponse,
+)
 app.mount("/static", StaticFiles(directory=get_ui_static_directory()), name="static")
 app.include_router(ui_router)
 
@@ -156,7 +184,10 @@ def _build_error_response(
             trace_id=trace_id,
         )
     )
-    return JSONResponse(status_code=status_code, content=error_response.model_dump())
+    return PrettyJSONResponse(
+        status_code=status_code,
+        content=error_response.model_dump(),
+    )
 
 
 def _emit_request_failed_event(
@@ -373,6 +404,88 @@ def _run_session_structured_extraction_endpoint[
 def health() -> dict[str, str]:
     """Return a simple health response for the API."""
     return {"status": "ok"}
+
+
+@app.post(
+    "/orchestrator/run",
+    response_model=RunReviewOrchestratorResponse,
+    responses={404: {"model": ApiErrorResponse}, 500: {"model": ApiErrorResponse}},
+    tags=["orchestrator"],
+)
+def run_review_orchestrator_endpoint(
+    request: Annotated[RunReviewOrchestratorRequest, Body()],
+    x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
+) -> RunReviewOrchestratorResponse | JSONResponse:
+    """Run the conversation-loop orchestrator for one requested ReviewPilot operation."""
+    trace_id = x_trace_id or uuid4().hex
+    start_time = perf_counter()
+    try:
+        return run_review_orchestrator(
+            database_path=get_database_path(),
+            request=request,
+            trace_id=trace_id,
+        )
+    except SessionNotFoundError:
+        _emit_request_failed_event(
+            trace_id=trace_id,
+            step_name="run_review_orchestrator.request_failed",
+            tool_name=DEFAULT_ORCHESTRATOR_TOOL_NAME,
+            start_time=start_time,
+            session_id=request.session_id,
+            reasoning_level=request.reasoning_level,
+            reasoning_type=DEFAULT_ORCHESTRATOR_REASONING_TYPE,
+            failure_reason="session_not_found",
+        )
+        return _build_error_response(
+            status_code=404,
+            code="session_not_found",
+            message="Unable to find the requested session.",
+            trace_id=trace_id,
+        )
+    except StructuredExtractionError as exc:
+        response_code = exc.code
+        response_message = exc.message
+        if exc.code in {"structured_extraction_failed", "no_provider_available"}:
+            response_code = "orchestrator_planner_provider_failed"
+            response_message = (
+                "Unable to build an orchestrator plan with the configured providers."
+            )
+        _emit_request_failed_event(
+            trace_id=trace_id,
+            step_name="run_review_orchestrator.request_failed",
+            tool_name=DEFAULT_ORCHESTRATOR_TOOL_NAME,
+            start_time=start_time,
+            session_id=request.session_id,
+            provider_name=exc.provider_name,
+            model_name=exc.model_name,
+            reasoning_level=request.reasoning_level,
+            reasoning_type=DEFAULT_ORCHESTRATOR_REASONING_TYPE,
+            retry_count=exc.retry_count,
+            failure_reason=response_code,
+        )
+        return _build_error_response(
+            status_code=500,
+            code=response_code,
+            message=response_message,
+            trace_id=trace_id,
+        )
+    except (sqlite3.Error, ValueError):
+        _emit_request_failed_event(
+            trace_id=trace_id,
+            step_name="run_review_orchestrator.request_failed",
+            tool_name=DEFAULT_ORCHESTRATOR_TOOL_NAME,
+            start_time=start_time,
+            session_id=request.session_id,
+            reasoning_level=request.reasoning_level,
+            reasoning_type=DEFAULT_ORCHESTRATOR_REASONING_TYPE,
+            failure_reason="orchestrator_state_query_failed",
+        )
+        return _build_error_response(
+            status_code=500,
+            code="orchestrator_state_query_failed",
+            message="Unable to load the stored state required for orchestration.",
+            trace_id=trace_id,
+        )
 
 
 @app.post(

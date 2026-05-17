@@ -648,17 +648,29 @@ function setCardActionState(sessionId, kind, actionState) {
   state.cardActionStates[`${sessionId}:${kind}`] = actionState;
 }
 
-function getSubmissionGradeState(submissionId) {
+function getSubmissionGradeStateKey(submissionId, operation = "grade_all") {
+  return `${submissionId}:${operation}`;
+}
+
+function setSubmissionGradeState(submissionId, actionState, operation = "grade_all") {
+  state.submissionGradeStates[getSubmissionGradeStateKey(submissionId, operation)] = actionState;
+}
+
+function getSubmissionGradeState(submissionId, operation = "grade_all") {
   return (
-    state.submissionGradeStates[submissionId] ?? {
+    state.submissionGradeStates[getSubmissionGradeStateKey(submissionId, operation)] ?? {
       status: "idle",
       message: "",
     }
   );
 }
 
-function setSubmissionGradeState(submissionId, actionState) {
-  state.submissionGradeStates[submissionId] = actionState;
+function isAnySubmissionGradeLoading(submissionId) {
+  const submissionPrefix = `${submissionId}:`;
+  return Object.entries(state.submissionGradeStates).some(
+    ([stateKey, actionState]) =>
+      stateKey.startsWith(submissionPrefix) && actionState.status === "loading",
+  );
 }
 
 function getOpenCardModal(workspace, conceptsDocument) {
@@ -703,6 +715,7 @@ function getOpenCardModal(workspace, conceptsDocument) {
     return {
       kind: "submission",
       submission,
+      sessionId: workspace.sessionId,
     };
   }
 
@@ -994,7 +1007,7 @@ function renderAssignmentModal(modalState) {
     return renderConceptsDetailModal(modalState.conceptsDocument);
   }
   if (modalState.kind === "submission") {
-    return renderSubmissionDetailModal(modalState.submission);
+    return renderSubmissionDetailModal(modalState.submission, modalState.sessionId);
   }
   return renderRequirementsDetailModal(modalState.storedAssignmentRequirements);
 }
@@ -1162,7 +1175,7 @@ function renderRequirementsDetailModal(storedAssignments) {
   `;
 }
 
-function renderSubmissionDetailModal(submission) {
+function renderSubmissionDetailModal(submission, sessionId) {
   const conceptScores = normalizeScoreItems(submission.concept_scores);
   const assignmentRequirementScores = normalizeScoreItems(
     submission.assignment_requirement_scores,
@@ -1191,10 +1204,27 @@ function renderSubmissionDetailModal(submission) {
             <span data-icon="close"></span>
           </button>
         </div>
-        <div class="assignment-modal-meta">
-          <span class="status-pill status-${submission.status}">${formatStatusLabel(submission.status)}</span>
-          <span class="summary-pill">${escapeHtml(prettySourceType(submission.source_type))}</span>
-          <span class="summary-pill">${formatDateTime(submission.submitted_at)}</span>
+        <div class="submission-detail-toolbar">
+          <div class="submission-detail-toolbar-actions">
+            ${renderSubmissionActionStack(
+              submission,
+              sessionId,
+              "grade_concepts",
+              "Grade concepts",
+            )}
+            ${renderSubmissionActionStack(
+              submission,
+              sessionId,
+              "grade_assignment_requirements",
+              "Grade assignment requirements",
+            )}
+            ${renderSubmissionActionStack(
+              submission,
+              sessionId,
+              "grade_rubrics",
+              "Grade rubrics",
+            )}
+          </div>
         </div>
         <div class="assignment-modal-body">
           <section class="assignment-modal-section submission-score-overview">
@@ -1310,6 +1340,46 @@ function renderSubmissionScoreItem(scoreItem, index, scoreType) {
   `;
 }
 
+function renderSubmissionActionStack(submission, sessionId, operation, label) {
+  const actionState = getSubmissionGradeState(submission.submission_id, operation);
+  const isLoading = actionState.status === "loading";
+  const isBlockedByOtherOperation =
+    !isLoading && isAnySubmissionGradeLoading(submission.submission_id);
+  const isDisabled =
+    !hasSubmissionSourceLocator(submission)
+    || isLoading
+    || isBlockedByOtherOperation;
+  const buttonLabel = isLoading ? "Grading..." : label;
+  const buttonClasses = [
+    "submission-grade-button",
+    actionState.status === "success" ? "is-success" : "",
+    actionState.status === "error" ? "is-error" : "",
+    isLoading ? "is-loading" : "",
+    isBlockedByOtherOperation ? "is-blocked" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return `
+    <div class="submission-detail-action-stack">
+      <button
+        class="${buttonClasses}"
+        type="button"
+        data-run-orchestrator-operation="${escapeAttribute(operation)}"
+        data-session-id="${escapeAttribute(sessionId)}"
+        data-submission-id="${escapeAttribute(submission.submission_id)}"
+        ${isDisabled ? "disabled" : ""}
+      >
+        ${escapeHtml(buttonLabel)}
+      </button>
+      ${
+        actionState.message
+          ? `<p class="submission-action-feedback ${actionState.status === "error" ? "is-error" : ""}">${escapeHtml(actionState.message)}</p>`
+          : ""
+      }
+    </div>
+  `;
+}
+
 function renderAssignmentDataSections(assignment, conceptsDocument, sessionId) {
   const filteredSubmissions = getFilteredSubmissions(assignment.submissions);
   return `
@@ -1333,7 +1403,7 @@ function renderAssignmentDataSections(assignment, conceptsDocument, sessionId) {
           : filteredSubmissions.length === 0
             ? '<div class="empty-state submission-empty-state">No submissions match this filter yet.</div>'
             : `<div class="submissions-list">${filteredSubmissions
-                .map((submission) => renderSubmissionRow(submission, conceptsDocument, sessionId))
+                .map((submission) => renderSubmissionRow(submission, sessionId))
                 .join("")}</div>`
       }
     </div>
@@ -1569,25 +1639,22 @@ function renderEditableRequirementItem(requirement, index) {
   `;
 }
 
-function renderSubmissionRow(submission, conceptsDocument, sessionId) {
+function renderSubmissionRow(submission, sessionId) {
   const detailLinks = [];
   const conceptScores = normalizeScoreItems(submission.concept_scores);
   const assignmentRequirementScores = normalizeScoreItems(
     submission.assignment_requirement_scores,
   );
   const rubricScores = normalizeScoreItems(submission.rubric_scores);
-  const hasStoredConcepts = conceptsDocument.concepts.length > 0;
   const hasValidSourceLocator = hasSubmissionSourceLocator(submission);
-  const actionState = getSubmissionGradeState(submission.submission_id);
-  const isLoading = actionState.status === "loading";
-  const isDisabled = !hasStoredConcepts || !hasValidSourceLocator || isLoading;
+  const actionState = getSubmissionGradeState(submission.submission_id, "grade_all");
+  const isLoading = isAnySubmissionGradeLoading(submission.submission_id);
+  const isDisabled = !hasValidSourceLocator || isLoading;
   const actionLabel = isLoading
     ? "Grading..."
-    : !hasStoredConcepts
-      ? "No Concepts"
-      : !hasValidSourceLocator
-        ? "Source Missing"
-        : "Grade Concepts";
+    : !hasValidSourceLocator
+      ? "Source Missing"
+      : "Grade";
   const conceptScoreSummary = summarizeScoreItems(conceptScores);
   const requirementScoreSummary = summarizeScoreItems(assignmentRequirementScores);
   const rubricScoreSummary = summarizeScoreItems(rubricScores);
@@ -1637,7 +1704,7 @@ function renderSubmissionRow(submission, conceptsDocument, sessionId) {
           <button
             class="submission-grade-button ${actionState.status === "success" ? "is-success" : ""} ${actionState.status === "error" ? "is-error" : ""}"
             type="button"
-            data-grade-concepts="true"
+            data-run-orchestrator-operation="grade_all"
             data-session-id="${escapeAttribute(sessionId)}"
             data-submission-id="${escapeAttribute(submission.submission_id)}"
             ${isDisabled ? "disabled" : ""}
@@ -1679,29 +1746,36 @@ function hasSubmissionSourceLocator(submission) {
   return false;
 }
 
-function buildGradeConceptsPayload(submission, conceptsDocument, sessionId) {
-  if (conceptsDocument.concepts.length === 0) {
-    throw new Error("No stored concepts are available for this session.");
-  }
+function buildOrchestratorPayload(submission, sessionId, operation) {
   if (!hasSubmissionSourceLocator(submission)) {
     throw new Error("This submission is missing its source locator.");
   }
+  const requirementScopedOperations = new Set([
+    "grade_assignment_requirements",
+    "grade_rubrics",
+    "grade_all",
+  ]);
+  if (
+    requirementScopedOperations.has(operation)
+    && !submission.assignment_requirement_id
+  ) {
+    throw new Error("This submission is missing its assignment requirement identifier.");
+  }
 
-  return {
+  const payload = {
+    operation,
     student_id: submission.student_id,
     session_id: sessionId,
+    ...(requirementScopedOperations.has(operation)
+      ? { assignment_requirement_id: submission.assignment_requirement_id }
+      : {}),
     source_type: submission.source_type,
     ...(submission.repo_url ? { repo_url: submission.repo_url } : {}),
     ...(submission.local_path ? { local_path: submission.local_path } : {}),
     ...(submission.zip_path ? { zip_path: submission.zip_path } : {}),
     reasoning_level: "medium",
-    concepts: conceptsDocument.concepts.map((concept) => ({
-      concept_name: concept.name,
-      summary: concept.summary,
-      grading_reason: concept.grading_reason,
-      max_score: concept.concept_importance,
-    })),
   };
+  return payload;
 }
 
 function normalizeScoreItems(scoreItems) {
@@ -1923,21 +1997,21 @@ function bindSubmissionRowInteractions() {
 }
 
 function bindSubmissionGradeInteractions() {
-  document.querySelectorAll("[data-grade-concepts]").forEach((button) => {
+  document.querySelectorAll("[data-run-orchestrator-operation]").forEach((button) => {
     button.addEventListener("click", async () => {
       const sessionId = button.getAttribute("data-session-id");
       const submissionId = button.getAttribute("data-submission-id");
-      if (!sessionId || !submissionId) {
+      const operation = button.getAttribute("data-run-orchestrator-operation");
+      if (!sessionId || !submissionId || !operation) {
         return;
       }
-      await gradeSubmissionConcepts(sessionId, submissionId);
+      await runSubmissionOrchestratorOperation(sessionId, submissionId, operation);
     });
   });
 }
 
-async function gradeSubmissionConcepts(sessionId, submissionId) {
+async function runSubmissionOrchestratorOperation(sessionId, submissionId, operation) {
   const workspace = await ensureSessionWorkspaceLoaded(sessionId);
-  const conceptsDocument = await ensureSessionConceptsLoaded(sessionId);
   const submission = workspace.submissions.find(
     (submissionItem) => submissionItem.submission_id === submissionId,
   );
@@ -1945,33 +2019,70 @@ async function gradeSubmissionConcepts(sessionId, submissionId) {
     setSubmissionGradeState(submissionId, {
       status: "error",
       message: "Submission not found.",
-    });
+    }, operation);
     await renderAssignmentsPage();
     return;
   }
 
   try {
-    const payload = buildGradeConceptsPayload(submission, conceptsDocument, sessionId);
+    const payload = buildOrchestratorPayload(submission, sessionId, operation);
     setSubmissionGradeState(submissionId, {
       status: "loading",
       message: "",
-    });
+    }, operation);
     await renderAssignmentsPage();
-    const response = await postJson("/grade/concepts", payload);
+    const response = await postJson("/orchestrator/run", payload);
+    if (response.status === "failed") {
+      throw new Error(
+        response.error?.message
+          || response.reasoning_summary
+          || "Unable to complete the requested grading action.",
+      );
+    }
     invalidateSessionWorkspace(sessionId);
-    await ensureSessionWorkspaceLoaded(sessionId);
+    invalidateSessionConcepts(sessionId);
+    await Promise.all([
+      ensureSessionWorkspaceLoaded(sessionId),
+      ensureSessionConceptsLoaded(sessionId),
+    ]);
     setSubmissionGradeState(submissionId, {
       status: "success",
-      message: `${response.concept_scores.length} scores saved.`,
-    });
+      message: buildOrchestratorSuccessMessage(operation, response),
+    }, operation);
   } catch (error) {
     setSubmissionGradeState(submissionId, {
       status: "error",
-      message: error instanceof Error ? error.message : "Unable to grade concepts.",
-    });
+      message:
+        error instanceof Error
+          ? error.message
+          : "Unable to complete the requested grading action.",
+    }, operation);
   }
 
   await renderAssignmentsPage();
+}
+
+function buildOrchestratorSuccessMessage(operation, response) {
+  if (operation === "grade_all") {
+    const conceptScoreCount =
+      response.result?.grade_concepts_response?.concept_scores?.length ?? 0;
+    const requirementScoreCount =
+      response.result?.grade_assignment_requirements_response
+        ?.assignment_requirement_scores?.length ?? 0;
+    return `${conceptScoreCount} concept scores and ${requirementScoreCount} requirement scores saved.`;
+  }
+  if (operation === "grade_concepts") {
+    const conceptScoreCount =
+      response.result?.grade_concepts_response?.concept_scores?.length ?? 0;
+    return `${conceptScoreCount} concept scores saved.`;
+  }
+  if (operation === "grade_assignment_requirements") {
+    const requirementScoreCount =
+      response.result?.grade_assignment_requirements_response
+        ?.assignment_requirement_scores?.length ?? 0;
+    return `${requirementScoreCount} requirement scores saved.`;
+  }
+  return response.reasoning_summary || "Completed.";
 }
 
 async function synthesizeSessionCard(sessionId, kind) {

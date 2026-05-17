@@ -14,6 +14,15 @@ from app.telemetry import emit_event
 CONCEPTS_GRADED_STATUS = "concepts_graded"
 ASSIGNMENT_REQUIREMENTS_GRADED_STATUS = "assignment_requirements_graded"
 FINAL_SUBMISSION_STATUSES = {"reviewed", "needs_resubmission"}
+SUBMISSION_STATUS_VALUES = (
+    "submitted",
+    "under_review",
+    CONCEPTS_GRADED_STATUS,
+    ASSIGNMENT_REQUIREMENTS_GRADED_STATUS,
+    "reviewed",
+    "needs_resubmission",
+)
+ASSIGNMENT_SUBMISSIONS_MIGRATION_TABLE = "assignment_submissions__migrated"
 
 
 def save_student_concept_scores(
@@ -46,6 +55,13 @@ def save_student_concept_scores(
     created_at = datetime.now(UTC).isoformat()
     connection = sqlite3.connect(database_path)
     try:
+        _ensure_assignment_submission_status_schema(
+            connection=connection,
+            session_id=session_id,
+            submission_id=submission_id,
+            trace_id=trace_id,
+            review_id=review_id,
+        )
         connection.execute(
             """
             INSERT INTO student_grades (
@@ -146,6 +162,13 @@ def save_student_assignment_requirement_scores(
     created_at = datetime.now(UTC).isoformat()
     connection = sqlite3.connect(database_path)
     try:
+        _ensure_assignment_submission_status_schema(
+            connection=connection,
+            session_id=session_id,
+            submission_id=submission_id,
+            trace_id=trace_id,
+            review_id=review_id,
+        )
         connection.execute(
             """
             INSERT INTO student_grades (
@@ -250,3 +273,184 @@ def _update_submission_status(
         (target_status, submission_id),
     )
     return target_status
+
+
+def _ensure_assignment_submission_status_schema(
+    *,
+    connection: sqlite3.Connection,
+    session_id: str,
+    submission_id: str,
+    trace_id: str,
+    review_id: str | None,
+) -> None:
+    """Upgrade legacy assignment_submissions status constraints before grading writes."""
+    table_sql_row = connection.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'assignment_submissions'
+        """
+    ).fetchone()
+    if table_sql_row is None:
+        return
+
+    table_sql = str(table_sql_row[0] or "")
+    if all(status_value in table_sql for status_value in SUBMISSION_STATUS_VALUES):
+        return
+
+    start_time = perf_counter()
+    emit_event(
+        trace_id=trace_id,
+        review_id=review_id,
+        session_id=session_id,
+        step_name="ensure_assignment_submission_status_schema.query_started",
+        tool_name=None,
+        data_store="sqlite",
+        provider_name=None,
+        validation_status="pending",
+        retry_count=0,
+        details={"submission_id": submission_id},
+    )
+    try:
+        _migrate_assignment_submission_status_schema(connection=connection)
+        connection.commit()
+    except sqlite3.Error as exc:
+        connection.rollback()
+        elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+        emit_event(
+            trace_id=trace_id,
+            review_id=review_id,
+            session_id=session_id,
+            step_name="ensure_assignment_submission_status_schema.query_failed",
+            tool_name=None,
+            data_store="sqlite",
+            provider_name=None,
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=elapsed_ms,
+            failure_reason=str(exc),
+            details={"submission_id": submission_id},
+        )
+        raise
+
+    elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+    emit_event(
+        trace_id=trace_id,
+        review_id=review_id,
+        session_id=session_id,
+        step_name="ensure_assignment_submission_status_schema.query_completed",
+        tool_name=None,
+        data_store="sqlite",
+        provider_name=None,
+        validation_status="passed",
+        retry_count=0,
+        elapsed_ms=elapsed_ms,
+        details={
+            "submission_id": submission_id,
+            "allowed_statuses": list(SUBMISSION_STATUS_VALUES),
+        },
+    )
+
+
+def _migrate_assignment_submission_status_schema(
+    *,
+    connection: sqlite3.Connection,
+) -> None:
+    """Rebuild assignment_submissions so legacy DB files allow newer grading statuses."""
+    connection.execute(f"DROP TABLE IF EXISTS {ASSIGNMENT_SUBMISSIONS_MIGRATION_TABLE}")
+    connection.execute(
+        f"""
+        CREATE TABLE {ASSIGNMENT_SUBMISSIONS_MIGRATION_TABLE} (
+          id TEXT PRIMARY KEY,
+          assignment_requirement_id TEXT NOT NULL,
+          student_id TEXT NOT NULL,
+          source_type TEXT NOT NULL
+            CHECK (source_type IN ('github_pr', 'local_folder', 'zip_upload')),
+          repo_url TEXT,
+          local_path TEXT,
+          zip_path TEXT,
+          youtube_demo_url TEXT,
+          linkedin_url TEXT,
+          submitted_at TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'submitted'
+            CHECK (
+              status IN (
+                'submitted',
+                'under_review',
+                'concepts_graded',
+                'assignment_requirements_graded',
+                'reviewed',
+                'needs_resubmission'
+              )
+            ),
+          CHECK (
+            (source_type = 'github_pr' AND repo_url IS NOT NULL) OR
+            (source_type = 'local_folder' AND local_path IS NOT NULL) OR
+            (source_type = 'zip_upload' AND zip_path IS NOT NULL)
+          ),
+          FOREIGN KEY (assignment_requirement_id) REFERENCES assignment_requirement(id),
+          FOREIGN KEY (student_id) REFERENCES students(id)
+        )
+        """
+    )
+    connection.execute(
+        f"""
+        INSERT INTO {ASSIGNMENT_SUBMISSIONS_MIGRATION_TABLE} (
+          id,
+          assignment_requirement_id,
+          student_id,
+          source_type,
+          repo_url,
+          local_path,
+          zip_path,
+          youtube_demo_url,
+          linkedin_url,
+          submitted_at,
+          status
+        )
+        SELECT
+          id,
+          assignment_requirement_id,
+          student_id,
+          source_type,
+          repo_url,
+          local_path,
+          zip_path,
+          youtube_demo_url,
+          linkedin_url,
+          submitted_at,
+          status
+        FROM assignment_submissions
+        """
+    )
+    connection.execute("DROP TABLE assignment_submissions")
+    connection.execute(
+        f"""
+        ALTER TABLE {ASSIGNMENT_SUBMISSIONS_MIGRATION_TABLE}
+        RENAME TO assignment_submissions
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_assignment_submissions_assignment_requirement_id
+          ON assignment_submissions (assignment_requirement_id)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_assignment_submissions_student_id
+          ON assignment_submissions (student_id)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_assignment_submissions_status
+          ON assignment_submissions (status)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_assignment_submissions_submitted_at
+          ON assignment_submissions (submitted_at)
+        """
+    )

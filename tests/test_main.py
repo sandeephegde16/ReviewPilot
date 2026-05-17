@@ -16,8 +16,11 @@ import app.assignment_requirement_provider as assignment_requirement_provider
 import app.concept_extraction_spec as concept_extraction_spec
 import app.concept_grading_provider as concept_grading_provider
 import app.concept_provider as concept_provider
+import app.external_provider_payloads as external_provider_payloads
 import app.main as main_module
+import app.orchestrator_provider as orchestrator_provider
 import app.provider_router as provider_router
+import app.schemas as app_schemas
 from app.logging_config import configure_logging
 from app.main import app
 from app.transcript_parser import normalize_transcript_text
@@ -267,8 +270,8 @@ def _build_test_database(database_path: Path) -> None:
                     [
                         {
                             "concept": "Tool registration",
-                            "score": 8,
-                            "max_score": 9,
+                            "score": 10,
+                            "max_score": 50,
                             "coverage_level": "strong",
                             "evidence": [
                                 "The walkthrough demonstrates MCP tool registration end to end."
@@ -281,8 +284,8 @@ def _build_test_database(database_path: Path) -> None:
                     [
                         {
                             "requirement_title": "Walkthrough evidence",
-                            "score": 4,
-                            "max_score": 5,
+                            "score": 5,
+                            "max_score": 50,
                             "evidence": ["The submitted demo covers the full review pilot flow."],
                         }
                     ]
@@ -292,7 +295,7 @@ def _build_test_database(database_path: Path) -> None:
                         {
                             "criterion": "delivery",
                             "score": 5,
-                            "max_score": 5,
+                            "max_score": 50,
                             "evidence": ["The demo recording is complete and clear."],
                         }
                     ]
@@ -404,6 +407,248 @@ def _seed_assignment_requirements_json(
         connection.close()
 
 
+def _downgrade_assignment_submissions_status_constraint(
+    *,
+    database_path: Path,
+) -> None:
+    """Rewrite the test DB to the older assignment_submissions status constraint."""
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.execute(
+            """
+            CREATE TABLE assignment_submissions__legacy (
+              id TEXT PRIMARY KEY,
+              assignment_requirement_id TEXT NOT NULL,
+              student_id TEXT NOT NULL,
+              source_type TEXT NOT NULL
+                CHECK (source_type IN ('github_pr', 'local_folder', 'zip_upload')),
+              repo_url TEXT,
+              local_path TEXT,
+              zip_path TEXT,
+              youtube_demo_url TEXT,
+              linkedin_url TEXT,
+              submitted_at TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'submitted'
+                CHECK (
+                  status IN (
+                    'submitted',
+                    'under_review',
+                    'reviewed',
+                    'needs_resubmission'
+                  )
+                ),
+              CHECK (
+                (source_type = 'github_pr' AND repo_url IS NOT NULL) OR
+                (source_type = 'local_folder' AND local_path IS NOT NULL) OR
+                (source_type = 'zip_upload' AND zip_path IS NOT NULL)
+              ),
+              FOREIGN KEY (assignment_requirement_id) REFERENCES assignment_requirement(id),
+              FOREIGN KEY (student_id) REFERENCES students(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO assignment_submissions__legacy (
+              id,
+              assignment_requirement_id,
+              student_id,
+              source_type,
+              repo_url,
+              local_path,
+              zip_path,
+              youtube_demo_url,
+              linkedin_url,
+              submitted_at,
+              status
+            )
+            SELECT
+              id,
+              assignment_requirement_id,
+              student_id,
+              source_type,
+              repo_url,
+              local_path,
+              zip_path,
+              youtube_demo_url,
+              linkedin_url,
+              submitted_at,
+              status
+            FROM assignment_submissions
+            """
+        )
+        connection.execute("DROP TABLE assignment_submissions")
+        connection.execute(
+            """
+            ALTER TABLE assignment_submissions__legacy
+            RENAME TO assignment_submissions
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_assignment_submissions_assignment_requirement_id
+              ON assignment_submissions (assignment_requirement_id)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_assignment_submissions_student_id
+              ON assignment_submissions (student_id)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_assignment_submissions_status
+              ON assignment_submissions (status)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_assignment_submissions_submitted_at
+              ON assignment_submissions (submitted_at)
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _parse_json_events_from_stdout(stdout: str) -> list[dict[str, object]]:
+    """Parse one or more pretty-printed telemetry JSON blocks from captured stdout."""
+    events: list[dict[str, object]] = []
+    current_lines: list[str] = []
+    brace_depth = 0
+
+    for line in stdout.splitlines():
+        stripped_line = line.strip()
+        if not current_lines:
+            if not stripped_line.startswith("{"):
+                continue
+            current_lines.append(line)
+            brace_depth = line.count("{") - line.count("}")
+            if brace_depth == 0:
+                events.append(json.loads("\n".join(current_lines)))
+                current_lines = []
+            continue
+
+        current_lines.append(line)
+        brace_depth += line.count("{") - line.count("}")
+        if brace_depth == 0:
+            events.append(json.loads("\n".join(current_lines)))
+            current_lines = []
+
+    return events
+
+
+def _schema_contains_additional_properties_true(node: object) -> bool:
+    """Return whether a JSON schema tree contains unsupported additionalProperties=true."""
+    if isinstance(node, list):
+        return any(_schema_contains_additional_properties_true(item) for item in node)
+    if not isinstance(node, dict):
+        return False
+    if node.get("additionalProperties") is True:
+        return True
+    return any(_schema_contains_additional_properties_true(value) for value in node.values())
+
+
+def _build_orchestrator_planner_checks() -> dict[str, bool]:
+    """Return the stable planner self-check block used by orchestrator tests."""
+    return {
+        "inputs_sufficient": True,
+        "allowed_tools_only": True,
+        "prerequisites_satisfied_or_planned": True,
+        "duplicate_actions_avoided": True,
+        "plan_is_minimal": True,
+    }
+
+
+def _build_tool_request_turn(
+    *,
+    tool_names: list[str],
+    reasoning_type: str,
+    reasoning_summary: str,
+) -> dict[str, object]:
+    """Build one valid planner TOOL_REQUEST response payload."""
+    return {
+        "response_type": "TOOL_REQUEST",
+        "reasoning_type": reasoning_type,
+        "reasoning_summary": reasoning_summary,
+        "checks": _build_orchestrator_planner_checks(),
+        "tool_calls": [{"tool_name": tool_name} for tool_name in tool_names],
+        "context_update": None,
+        "final_review": None,
+        "warnings": [],
+        "error": {
+            "error_code": None,
+            "message": None,
+            "details": None,
+        },
+    }
+
+
+def _build_context_update_turn(*, next_goal: str) -> dict[str, object]:
+    """Build one valid planner CONTEXT_UPDATE response payload."""
+    return {
+        "response_type": "CONTEXT_UPDATE",
+        "reasoning_type": "state_update",
+        "reasoning_summary": "The latest tool results were incorporated into planner state.",
+        "checks": _build_orchestrator_planner_checks(),
+        "tool_calls": [],
+        "context_update": {
+            "knowledge_state": {"next_goal": next_goal},
+            "next_goal": next_goal,
+        },
+        "final_review": None,
+        "warnings": [],
+        "error": {
+            "error_code": None,
+            "message": None,
+            "details": None,
+        },
+    }
+
+
+def _build_final_review_turn(*, reasoning_type: str, summary: str) -> dict[str, object]:
+    """Build one valid planner FINAL_REVIEW response payload."""
+    return {
+        "response_type": "FINAL_REVIEW",
+        "reasoning_type": reasoning_type,
+        "reasoning_summary": summary,
+        "checks": _build_orchestrator_planner_checks(),
+        "tool_calls": [],
+        "context_update": None,
+        "final_review": {
+            "status": "success",
+            "summary": summary,
+        },
+        "warnings": [],
+        "error": {
+            "error_code": None,
+            "message": None,
+            "details": None,
+        },
+    }
+
+
+def _build_fallback_turn(*, error_code: str, message: str) -> dict[str, object]:
+    """Build one valid planner FALLBACK response payload."""
+    return {
+        "response_type": "FALLBACK",
+        "reasoning_type": "failure_handling",
+        "reasoning_summary": message,
+        "checks": _build_orchestrator_planner_checks(),
+        "tool_calls": [],
+        "context_update": None,
+        "final_review": None,
+        "warnings": [],
+        "error": {
+            "error_code": error_code,
+            "message": message,
+            "details": None,
+        },
+    }
+
+
 def _build_test_project_folder(project_root: Path) -> Path:
     """Create a bounded local project used for concept grading tests."""
     project_root.mkdir(parents=True, exist_ok=True)
@@ -493,6 +738,17 @@ class _RecordingStructuredExtractionProvider:
             trace_id=trace_id,
             repair_context=repair_context,
         )
+
+
+def test_health_response_is_pretty_printed_json() -> None:
+    """GET /health should return indented JSON for easier browser inspection."""
+    client = TestClient(app)
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert response.text == '{\n  "status": "ok"\n}'
 
 
 class _RaisingConceptProvider:
@@ -632,8 +888,8 @@ def test_get_all_sessions_emits_structured_telemetry(
     response = client.get("/allsessions", headers={"X-Trace-Id": "trace-telemetry"})
 
     assert response.status_code == 200
-    stdout = capsys.readouterr().out.strip().splitlines()
-    telemetry_events = [json.loads(line) for line in stdout if line.startswith("{")]
+    stdout = capsys.readouterr().out
+    telemetry_events = _parse_json_events_from_stdout(stdout)
     assert [event["step_name"] for event in telemetry_events] == [
         "get_all_sessions.request_received",
         "list_session_summaries.query_started",
@@ -1280,8 +1536,8 @@ def test_extract_session_concepts_emits_structured_telemetry(
     )
 
     assert response.status_code == 200
-    stdout = capsys.readouterr().out.strip().splitlines()
-    telemetry_events = [json.loads(line) for line in stdout if line.startswith("{")]
+    stdout = capsys.readouterr().out
+    telemetry_events = _parse_json_events_from_stdout(stdout)
     assert [event["step_name"] for event in telemetry_events] == [
         "extract_session_concepts.request_received",
         "get_session_extraction_source.query_started",
@@ -1387,8 +1643,8 @@ def test_extract_session_concepts_emits_repair_telemetry(
     )
 
     assert response.status_code == 200
-    stdout = capsys.readouterr().out.strip().splitlines()
-    telemetry_events = [json.loads(line) for line in stdout if line.startswith("{")]
+    stdout = capsys.readouterr().out
+    telemetry_events = _parse_json_events_from_stdout(stdout)
     assert [event["step_name"] for event in telemetry_events] == [
         "extract_session_concepts.request_received",
         "get_session_extraction_source.query_started",
@@ -2117,8 +2373,8 @@ def test_extract_session_assignment_requirements_emits_structured_telemetry(
     )
 
     assert response.status_code == 200
-    stdout = capsys.readouterr().out.strip().splitlines()
-    telemetry_events = [json.loads(line) for line in stdout if line.startswith("{")]
+    stdout = capsys.readouterr().out
+    telemetry_events = _parse_json_events_from_stdout(stdout)
     assert [event["step_name"] for event in telemetry_events] == [
         "extract_session_assignment_requirements.request_received",
         "list_session_assignment_requirement_sources.query_started",
@@ -2279,6 +2535,11 @@ def test_get_session_assignment_requirements_returns_stored_document(
     database_path = tmp_path / "reviewpilot.db"
     assignment_requirements = _build_stored_assignment_requirements_fixture()
     _build_test_database(database_path)
+    _seed_session_concepts_json(
+        database_path=database_path,
+        session_id="session-newer",
+        concepts=[],
+    )
     _seed_assignment_requirements_json(
         database_path=database_path,
         assignment_requirements=assignment_requirements,
@@ -2409,8 +2670,8 @@ def test_grade_submission_concepts_returns_scores_for_local_folder(
                 "concept_scores": [
                     {
                         "concept": "time complexity",
-                        "score": 4,
-                        "max_score": 5,
+                        "score": 5,
+                        "max_score": 50,
                         "coverage_level": "strong",
                         "evidence": [
                             "README explains O(log n) search complexity.",
@@ -2461,7 +2722,7 @@ def test_grade_submission_concepts_returns_scores_for_local_folder(
                     "grading_reason": (
                         "Algorithmic efficiency is part of the session learning goals."
                     ),
-                    "max_score": 5,
+                    "max_score": 50,
                 }
             ],
         },
@@ -2481,8 +2742,8 @@ def test_grade_submission_concepts_returns_scores_for_local_folder(
         "concept_scores": [
             {
                 "concept": "time complexity",
-                "score": 4,
-                "max_score": 5,
+                "score": 25,
+                "max_score": 50,
                 "coverage_level": "strong",
                 "evidence": [
                     "README explains O(log n) search complexity.",
@@ -2524,8 +2785,8 @@ def test_grade_submission_concepts_persists_concept_scores_json(
                 "concept_scores": [
                     {
                         "concept": "time complexity",
-                        "score": 4,
-                        "max_score": 5,
+                        "score": 5,
+                        "max_score": 50,
                         "coverage_level": "strong",
                         "evidence": [
                             "README explains O(log n) search complexity.",
@@ -2564,7 +2825,7 @@ def test_grade_submission_concepts_persists_concept_scores_json(
                     "grading_reason": (
                         "Algorithmic efficiency is part of the session learning goals."
                     ),
-                    "max_score": 5,
+                    "max_score": 50,
                 }
             ],
         },
@@ -2594,6 +2855,93 @@ def test_grade_submission_concepts_persists_concept_scores_json(
     assert row[1] == "concepts_graded"
 
 
+def test_grade_submission_concepts_migrates_legacy_submission_status_constraint(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Concept grading should auto-upgrade legacy DB files before persisting statuses."""
+    database_path = tmp_path / "reviewpilot.db"
+    project_root = _build_test_project_folder(tmp_path / "student-project")
+    _build_test_database(database_path)
+    _downgrade_assignment_submissions_status_constraint(database_path=database_path)
+    provider = _RecordingStructuredExtractionProvider(
+        [
+            {
+                "concept_scores": [
+                    {
+                        "concept": "time complexity",
+                        "score": 5,
+                        "max_score": 50,
+                        "coverage_level": "strong",
+                        "evidence": ["README explains O(log n) search complexity."],
+                        "deductions": ["Space complexity is not discussed."],
+                    }
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "build_concept_grading_provider_candidates",
+        lambda: [provider_router.ProviderCandidate("anthropic", "claude-sonnet-4-6")],
+    )
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "build_concept_grading_provider",
+        lambda *, provider_name, model_name: provider,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/grade/concepts",
+        json={
+            "student_id": "student-ada",
+            "session_id": "session-newer",
+            "source_type": "local_folder",
+            "local_path": str(project_root),
+            "concepts": [
+                {
+                    "concept_name": "time complexity",
+                    "summary": "Evaluate how the project explains and implements complexity.",
+                    "grading_reason": (
+                        "Algorithmic efficiency is part of the session learning goals."
+                    ),
+                    "max_score": 50,
+                }
+            ],
+        },
+        headers={"X-Trace-Id": "trace-grade-concepts-legacy-status-migration"},
+    )
+
+    assert response.status_code == 200
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            """
+            SELECT status
+            FROM assignment_submissions
+            WHERE id = ?
+            """,
+            ("submission-mcp",),
+        ).fetchone()
+        schema_sql_row = connection.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'assignment_submissions'
+            """
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert row is not None
+    assert row[0] == "concepts_graded"
+    assert schema_sql_row is not None
+    assert "concepts_graded" in str(schema_sql_row[0])
+    assert "assignment_requirements_graded" in str(schema_sql_row[0])
+
+
 def test_grade_submission_concepts_falls_back_to_second_real_model(
     monkeypatch,
     tmp_path: Path,
@@ -2609,7 +2957,7 @@ def test_grade_submission_concepts_falls_back_to_second_real_model(
                     {
                         "concept": "time complexity",
                         "score": 5,
-                        "max_score": 5,
+                        "max_score": 50,
                         "coverage_level": "strong",
                         "evidence": ["README explains O(log n) search complexity."],
                         "deductions": [],
@@ -2668,7 +3016,7 @@ def test_grade_submission_concepts_falls_back_to_second_real_model(
                     "grading_reason": (
                         "Algorithmic efficiency is part of the session learning goals."
                     ),
-                    "max_score": 5,
+                    "max_score": 50,
                 }
             ],
         },
@@ -2676,7 +3024,7 @@ def test_grade_submission_concepts_falls_back_to_second_real_model(
     )
 
     assert response.status_code == 200
-    assert response.json()["concept_scores"][0]["score"] == 5
+    assert response.json()["concept_scores"][0]["score"] == 25
     assert len(fallback_provider.requests) == 1
 
 
@@ -2736,7 +3084,7 @@ def test_grade_submission_concepts_returns_structured_error_when_all_models_fail
                     "grading_reason": (
                         "Algorithmic efficiency is part of the session learning goals."
                     ),
-                    "max_score": 5,
+                    "max_score": 50,
                 }
             ],
         },
@@ -2767,8 +3115,8 @@ def test_grade_submission_concepts_returns_structured_error_when_persistence_fai
                 "concept_scores": [
                     {
                         "concept": "time complexity",
-                        "score": 4,
-                        "max_score": 5,
+                        "score": 5,
+                        "max_score": 50,
                         "coverage_level": "strong",
                         "evidence": ["README explains O(log n) search complexity."],
                         "deductions": ["Space complexity is not discussed."],
@@ -2815,7 +3163,7 @@ def test_grade_submission_concepts_returns_structured_error_when_persistence_fai
                     "grading_reason": (
                         "Algorithmic efficiency is part of the session learning goals."
                     ),
-                    "max_score": 5,
+                    "max_score": 50,
                 }
             ],
         },
@@ -2847,8 +3195,8 @@ def test_grade_submission_concepts_emits_structured_telemetry(
                 "concept_scores": [
                     {
                         "concept": "time complexity",
-                        "score": 4,
-                        "max_score": 5,
+                        "score": 5,
+                        "max_score": 50,
                         "coverage_level": "strong",
                         "evidence": ["README explains O(log n) search complexity."],
                         "deductions": ["Space complexity is not discussed."],
@@ -2896,7 +3244,7 @@ def test_grade_submission_concepts_emits_structured_telemetry(
                     "grading_reason": (
                         "Algorithmic efficiency is part of the session learning goals."
                     ),
-                    "max_score": 5,
+                    "max_score": 50,
                 }
             ],
         },
@@ -2904,8 +3252,8 @@ def test_grade_submission_concepts_emits_structured_telemetry(
     )
 
     assert response.status_code == 200
-    stdout = capsys.readouterr().out.strip().splitlines()
-    telemetry_events = [json.loads(line) for line in stdout if line.startswith("{")]
+    stdout = capsys.readouterr().out
+    telemetry_events = _parse_json_events_from_stdout(stdout)
     assert [event["step_name"] for event in telemetry_events] == [
         "grade_submission_concepts.request_received",
         "get_concept_grading_context.query_started",
@@ -2968,8 +3316,8 @@ def test_grade_submission_assignment_requirements_returns_scores_for_local_folde
                     {
                         "requirement_title": "MCP-backed workflow",
                         "requirement_type": "mandatory_deliverable",
-                        "score": 4,
-                        "max_score": 5,
+                        "score": 5,
+                        "max_score": 50,
                         "coverage_level": "strong",
                         "evidence": [
                             "README describes the MCP workflow implementation.",
@@ -3020,7 +3368,7 @@ def test_grade_submission_assignment_requirements_returns_scores_for_local_folde
                     "title": "MCP-backed workflow",
                     "summary": "Evaluate whether the MCP-based workflow is implemented.",
                     "evidence": ["Wire an MCP-backed workflow."],
-                    "max_score": 5,
+                    "max_score": 50,
                 }
             ],
         },
@@ -3043,8 +3391,8 @@ def test_grade_submission_assignment_requirements_returns_scores_for_local_folde
             {
                 "requirement_title": "MCP-backed workflow",
                 "requirement_type": "mandatory_deliverable",
-                "score": 4,
-                "max_score": 5,
+                "score": 25,
+                "max_score": 50,
                 "coverage_level": "strong",
                 "evidence": [
                     "README describes the MCP workflow implementation.",
@@ -3092,8 +3440,8 @@ def test_grade_submission_assignment_requirements_persists_scores_json(
                     {
                         "requirement_title": "MCP-backed workflow",
                         "requirement_type": "mandatory_deliverable",
-                        "score": 4,
-                        "max_score": 5,
+                        "score": 5,
+                        "max_score": 50,
                         "coverage_level": "strong",
                         "evidence": [
                             "README describes the MCP workflow implementation.",
@@ -3132,7 +3480,7 @@ def test_grade_submission_assignment_requirements_persists_scores_json(
                     "title": "MCP-backed workflow",
                     "summary": "Evaluate whether the MCP-based workflow is implemented.",
                     "evidence": ["Wire an MCP-backed workflow."],
-                    "max_score": 5,
+                    "max_score": 50,
                 }
             ],
         },
@@ -3187,7 +3535,7 @@ def test_grade_submission_assignment_requirements_returns_404_for_missing_assign
                     "title": "Missing requirement",
                     "summary": "This assignment requirement does not exist.",
                     "evidence": ["Missing evidence"],
-                    "max_score": 5,
+                    "max_score": 50,
                 }
             ],
         },
@@ -3219,8 +3567,8 @@ def test_grade_submission_assignment_requirements_returns_structured_error_when_
                     {
                         "requirement_title": "MCP-backed workflow",
                         "requirement_type": "mandatory_deliverable",
-                        "score": 4,
-                        "max_score": 5,
+                        "score": 5,
+                        "max_score": 50,
                         "coverage_level": "strong",
                         "evidence": ["README describes the MCP workflow implementation."],
                         "deductions": ["Automated validation coverage is limited."],
@@ -3267,7 +3615,7 @@ def test_grade_submission_assignment_requirements_returns_structured_error_when_
                     "title": "MCP-backed workflow",
                     "summary": "Evaluate whether the MCP-based workflow is implemented.",
                     "evidence": ["Wire an MCP-backed workflow."],
-                    "max_score": 5,
+                    "max_score": 50,
                 }
             ],
         },
@@ -3302,8 +3650,8 @@ def test_grade_submission_assignment_requirements_emits_structured_telemetry(
                     {
                         "requirement_title": "MCP-backed workflow",
                         "requirement_type": "mandatory_deliverable",
-                        "score": 4,
-                        "max_score": 5,
+                        "score": 5,
+                        "max_score": 50,
                         "coverage_level": "strong",
                         "evidence": ["README describes the MCP workflow implementation."],
                         "deductions": ["Automated validation coverage is limited."],
@@ -3352,7 +3700,7 @@ def test_grade_submission_assignment_requirements_emits_structured_telemetry(
                     "title": "MCP-backed workflow",
                     "summary": "Evaluate whether the MCP-based workflow is implemented.",
                     "evidence": ["Wire an MCP-backed workflow."],
-                    "max_score": 5,
+                    "max_score": 50,
                 }
             ],
         },
@@ -3360,8 +3708,8 @@ def test_grade_submission_assignment_requirements_emits_structured_telemetry(
     )
 
     assert response.status_code == 200
-    stdout = capsys.readouterr().out.strip().splitlines()
-    telemetry_events = [json.loads(line) for line in stdout if line.startswith("{")]
+    stdout = capsys.readouterr().out
+    telemetry_events = _parse_json_events_from_stdout(stdout)
     assert [event["step_name"] for event in telemetry_events] == [
         "grade_submission_assignment_requirements.request_received",
         "get_assignment_requirement_grading_context.query_started",
@@ -3446,8 +3794,8 @@ def test_get_session_submissions_returns_all_submissions_for_session(
             "concept_scores": [
                 {
                     "concept": "Tool registration",
-                    "score": 8,
-                    "max_score": 9,
+                    "score": 25,
+                    "max_score": 50,
                     "coverage_level": "strong",
                     "evidence": ["The walkthrough demonstrates MCP tool registration end to end."],
                     "deductions": ["Schema validation detail is brief."],
@@ -3456,8 +3804,8 @@ def test_get_session_submissions_returns_all_submissions_for_session(
             "assignment_requirement_scores": [
                 {
                     "requirement_title": "Walkthrough evidence",
-                    "score": 4,
-                    "max_score": 5,
+                    "score": 5,
+                    "max_score": 50,
                     "evidence": ["The submitted demo covers the full review pilot flow."],
                 }
             ],
@@ -3465,7 +3813,7 @@ def test_get_session_submissions_returns_all_submissions_for_session(
                 {
                     "criterion": "delivery",
                     "score": 5,
-                    "max_score": 5,
+                    "max_score": 50,
                     "evidence": ["The demo recording is complete and clear."],
                 }
             ],
@@ -3579,8 +3927,8 @@ def test_get_session_submissions_emits_structured_telemetry(
     )
 
     assert response.status_code == 200
-    stdout = capsys.readouterr().out.strip().splitlines()
-    telemetry_events = [json.loads(line) for line in stdout if line.startswith("{")]
+    stdout = capsys.readouterr().out
+    telemetry_events = _parse_json_events_from_stdout(stdout)
     assert [event["step_name"] for event in telemetry_events] == [
         "get_session_submissions.request_received",
         "list_session_submissions.query_started",
@@ -3738,8 +4086,8 @@ def test_get_student_submissions_emits_structured_telemetry(
     )
 
     assert response.status_code == 200
-    stdout = capsys.readouterr().out.strip().splitlines()
-    telemetry_events = [json.loads(line) for line in stdout if line.startswith("{")]
+    stdout = capsys.readouterr().out
+    telemetry_events = _parse_json_events_from_stdout(stdout)
     assert [event["step_name"] for event in telemetry_events] == [
         "get_student_submissions.request_received",
         "list_student_submissions.query_started",
@@ -3749,3 +4097,728 @@ def test_get_student_submissions_emits_structured_telemetry(
     assert all(event["trace_id"] == "trace-student-telemetry" for event in telemetry_events)
     assert all(event["tool_name"] is None for event in telemetry_events)
     assert all(event["data_store"] == "sqlite" for event in telemetry_events)
+
+
+def test_run_review_orchestrator_synthesizes_concepts_via_tool_loop(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """POST /orchestrator/run should loop through planner tool requests and final review."""
+    database_path = tmp_path / "reviewpilot.db"
+    concepts = _build_stored_concepts_fixture()
+    _build_test_database(database_path)
+    _seed_session_concepts_json(
+        database_path=database_path,
+        session_id="session-newer",
+        concepts=[],
+    )
+    planner_provider = _RecordingStructuredExtractionProvider(
+        [
+            _build_tool_request_turn(
+                tool_names=["extract_concepts"],
+                reasoning_type="prerequisite_planning",
+                reasoning_summary="Stored concepts are missing, so extraction must run first.",
+            ),
+            _build_final_review_turn(
+                reasoning_type="artifact_reuse",
+                summary="Concept extraction completed and the stored document is now available.",
+            ),
+        ]
+    )
+    concept_extraction_provider = _RecordingStructuredExtractionProvider(
+        [{"concepts": concepts}]
+    )
+
+    monkeypatch.setattr(
+        orchestrator_provider,
+        "build_orchestrator_planner_provider_candidates",
+        lambda: [provider_router.ProviderCandidate("anthropic", "claude-sonnet-4-6")],
+    )
+    monkeypatch.setattr(
+        orchestrator_provider,
+        "build_orchestrator_planner_provider",
+        lambda *, provider_name, model_name: planner_provider,
+    )
+    monkeypatch.setattr(
+        provider_router,
+        "build_provider_candidates",
+        lambda: [provider_router.ProviderCandidate("anthropic", "claude-sonnet-4-6")],
+    )
+    monkeypatch.setattr(
+        concept_provider,
+        "select_concept_extraction_provider",
+        lambda: concept_extraction_provider,
+    )
+    monkeypatch.setattr(
+        concept_provider,
+        "build_concept_extraction_provider",
+        lambda *, provider_name, model_name: concept_extraction_provider,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/orchestrator/run",
+        json={
+            "operation": "synthesize_concepts",
+            "session_id": "session-newer",
+        },
+        headers={"X-Trace-Id": "trace-orchestrator-concepts"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "trace_id": "trace-orchestrator-concepts",
+        "requested_operation": "synthesize_concepts",
+        "status": "success",
+        "reasoning_type": "artifact_reuse",
+        "reasoning_summary": (
+            "Concept extraction completed and the stored document is now available."
+        ),
+        "planner_turns": [
+            {
+                "turn_number": 1,
+                "response_type": "TOOL_REQUEST",
+                "reasoning_type": "prerequisite_planning",
+                "reasoning_summary": (
+                    "Stored concepts are missing, so extraction must run first."
+                ),
+                "checks": _build_orchestrator_planner_checks(),
+                "tool_calls": [{"tool_name": "extract_concepts"}],
+                "context_update": None,
+                "warnings": [],
+                "error": {
+                    "error_code": None,
+                    "message": None,
+                    "details": None,
+                },
+            },
+            {
+                "turn_number": 2,
+                "response_type": "FINAL_REVIEW",
+                "reasoning_type": "artifact_reuse",
+                "reasoning_summary": (
+                    "Concept extraction completed and the stored document is now available."
+                ),
+                "checks": _build_orchestrator_planner_checks(),
+                "tool_calls": [],
+                "context_update": None,
+                "warnings": [],
+                "error": {
+                    "error_code": None,
+                    "message": None,
+                    "details": None,
+                },
+            },
+        ],
+        "tool_results": [
+            {
+                "tool_name": "extract_concepts",
+                "status": "success",
+                "output_summary": "Extracted 2 concepts.",
+                "error_code": None,
+                "error_message": None,
+            }
+        ],
+        "result": {
+            "extract_concepts_response": {
+                "session_id": "session-newer",
+                "concepts": concepts,
+                "warnings": [],
+            },
+            "extract_assignment_requirements_response": None,
+            "grade_concepts_response": None,
+            "grade_assignment_requirements_response": None,
+        },
+        "warnings": [],
+        "error": {
+            "error_code": None,
+            "message": None,
+            "details": None,
+        },
+    }
+    planner_request, recorded_trace_id, repair_context = planner_provider.requests[0]
+    assert recorded_trace_id == "trace-orchestrator-concepts"
+    assert repair_context is None
+    prompt_fields = {
+        field.label: field.value for field in planner_request.prompt_input_fields
+    }
+    assert planner_request.operation_name == "run_reviewpilot_orchestrator"
+    assert planner_request.reasoning_type == "workflow_orchestration"
+    assert (
+        prompt_fields["Completion condition"]
+        == "Completion is satisfied only when concept_extraction_completed is true."
+    )
+    assert prompt_fields["Available tools"] == "\n".join(
+        [
+            "- extract_concepts",
+        ]
+    )
+    assert prompt_fields["Previous tool results"] == "(none)"
+
+
+def test_orchestrator_planner_schema_is_compatible_with_anthropic_tool_forcing() -> None:
+    """The planner output schema should not include additionalProperties=true."""
+    anthropic_schema = external_provider_payloads.build_anthropic_input_schema(
+        app_schemas.get_orchestrator_planner_output_schema()
+    )
+
+    assert not _schema_contains_additional_properties_true(anthropic_schema)
+
+
+def test_run_review_orchestrator_reuses_stored_assignment_requirements_document(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """POST /orchestrator/run should reuse stored assignment requirements without crashing."""
+    database_path = tmp_path / "reviewpilot.db"
+    assignment_requirements = _build_stored_assignment_requirements_fixture()
+    _build_test_database(database_path)
+    _seed_session_concepts_json(
+        database_path=database_path,
+        session_id="session-newer",
+        concepts=[],
+    )
+    _seed_assignment_requirements_json(
+        database_path=database_path,
+        assignment_requirements=assignment_requirements,
+    )
+    planner_provider = _RecordingStructuredExtractionProvider(
+        [
+            _build_final_review_turn(
+                reasoning_type="artifact_reuse",
+                summary="Stored assignment requirements already satisfy the request.",
+            )
+        ]
+    )
+
+    monkeypatch.setattr(
+        orchestrator_provider,
+        "build_orchestrator_planner_provider_candidates",
+        lambda: [provider_router.ProviderCandidate("anthropic", "claude-sonnet-4-6")],
+    )
+    monkeypatch.setattr(
+        orchestrator_provider,
+        "build_orchestrator_planner_provider",
+        lambda *, provider_name, model_name: planner_provider,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/orchestrator/run",
+        json={
+            "operation": "synthesize_assignment_requirements",
+            "session_id": "session-newer",
+        },
+        headers={"X-Trace-Id": "trace-orchestrator-reuse-assignment-requirements"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "trace_id": "trace-orchestrator-reuse-assignment-requirements",
+        "requested_operation": "synthesize_assignment_requirements",
+        "status": "success",
+        "reasoning_type": "artifact_reuse",
+        "reasoning_summary": (
+            "Stored assignment requirements already satisfy the request."
+        ),
+        "planner_turns": [
+            {
+                "turn_number": 1,
+                "response_type": "FINAL_REVIEW",
+                "reasoning_type": "artifact_reuse",
+                "reasoning_summary": (
+                    "Stored assignment requirements already satisfy the request."
+                ),
+                "checks": _build_orchestrator_planner_checks(),
+                "tool_calls": [],
+                "context_update": None,
+                "warnings": [],
+                "error": {
+                    "error_code": None,
+                    "message": None,
+                    "details": None,
+                },
+            }
+        ],
+        "tool_results": [],
+        "result": {
+            "extract_concepts_response": None,
+            "extract_assignment_requirements_response": {
+                "session_id": "session-newer",
+                "assignment_requirements": assignment_requirements,
+                "warnings": [],
+            },
+            "grade_concepts_response": None,
+            "grade_assignment_requirements_response": None,
+        },
+        "warnings": [],
+        "error": {
+            "error_code": None,
+            "message": None,
+            "details": None,
+        },
+    }
+
+
+def test_run_review_orchestrator_grade_all_handles_context_updates_and_persists_scores(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """POST /orchestrator/run should support multi-turn grading with context updates."""
+    database_path = tmp_path / "reviewpilot.db"
+    project_root = _build_test_project_folder(tmp_path / "student-project")
+    concepts = _build_stored_concepts_fixture()[:1]
+    assignment_requirements = _build_stored_assignment_requirements_fixture()[:1]
+    _build_test_database(database_path)
+    _seed_session_concepts_json(
+        database_path=database_path,
+        session_id="session-newer",
+        concepts=[],
+    )
+    planner_provider = _RecordingStructuredExtractionProvider(
+        [
+            _build_tool_request_turn(
+                tool_names=[
+                    "extract_concepts",
+                    "extract_assignment_requirements",
+                ],
+                reasoning_type="composite_grading_plan",
+                reasoning_summary=(
+                    "Concepts and assignment requirements are both required before grading."
+                ),
+            ),
+            _build_context_update_turn(next_goal="Run both grading tools."),
+            _build_tool_request_turn(
+                tool_names=[
+                    "grade_concepts",
+                    "grade_assignment_requirements",
+                ],
+                reasoning_type="grading_plan",
+                reasoning_summary="All prerequisites are now available, so grading can run.",
+            ),
+            _build_final_review_turn(
+                reasoning_type="composite_grading_plan",
+                summary="Concept and assignment-requirement grading both completed.",
+            ),
+        ]
+    )
+    concept_extraction_provider = _RecordingStructuredExtractionProvider(
+        [{"concepts": concepts}]
+    )
+    assignment_requirement_extraction_provider = _RecordingStructuredExtractionProvider(
+        [{"assignment_requirements": assignment_requirements}]
+    )
+    concept_grading_provider_double = _RecordingStructuredExtractionProvider(
+        [
+            {
+                "concept_scores": [
+                    {
+                        "concept": "Tool registration",
+                        "score": 10,
+                        "max_score": 50,
+                        "coverage_level": "strong",
+                        "evidence": [
+                            "README explains O(log n) search complexity.",
+                            "Code implements binary search rather than linear scan.",
+                        ],
+                        "deductions": ["Schema validation detail is brief."],
+                    }
+                ]
+            }
+        ]
+    )
+    assignment_requirement_grading_provider_double = _RecordingStructuredExtractionProvider(
+        [
+            {
+                "assignment_requirement_scores": [
+                    {
+                        "requirement_title": "Repository submission",
+                        "requirement_type": "mandatory_deliverable",
+                        "score": 5,
+                        "max_score": 50,
+                        "coverage_level": "strong",
+                        "evidence": [
+                            "README describes the MCP workflow implementation.",
+                            "Code registers MCP tools and calls them from the review flow.",
+                        ],
+                        "deductions": ["Automated validation coverage is limited."],
+                    }
+                ]
+            }
+        ]
+    )
+
+    monkeypatch.setattr(
+        orchestrator_provider,
+        "build_orchestrator_planner_provider_candidates",
+        lambda: [provider_router.ProviderCandidate("anthropic", "claude-sonnet-4-6")],
+    )
+    monkeypatch.setattr(
+        orchestrator_provider,
+        "build_orchestrator_planner_provider",
+        lambda *, provider_name, model_name: planner_provider,
+    )
+    monkeypatch.setattr(
+        provider_router,
+        "build_provider_candidates",
+        lambda: [provider_router.ProviderCandidate("anthropic", "claude-sonnet-4-6")],
+    )
+    monkeypatch.setattr(
+        concept_provider,
+        "select_concept_extraction_provider",
+        lambda: concept_extraction_provider,
+    )
+    monkeypatch.setattr(
+        concept_provider,
+        "build_concept_extraction_provider",
+        lambda *, provider_name, model_name: concept_extraction_provider,
+    )
+    monkeypatch.setattr(
+        assignment_requirement_provider,
+        "select_assignment_requirement_extraction_provider",
+        lambda: assignment_requirement_extraction_provider,
+    )
+    monkeypatch.setattr(
+        assignment_requirement_provider,
+        "build_assignment_requirement_extraction_provider",
+        lambda *, provider_name, model_name: assignment_requirement_extraction_provider,
+    )
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "build_concept_grading_provider_candidates",
+        lambda: [provider_router.ProviderCandidate("anthropic", "claude-sonnet-4-6")],
+    )
+    monkeypatch.setattr(
+        concept_grading_provider,
+        "build_concept_grading_provider",
+        lambda *, provider_name, model_name: concept_grading_provider_double,
+    )
+    monkeypatch.setattr(
+        assignment_requirement_grading_provider,
+        "build_assignment_requirement_grading_provider_candidates",
+        lambda: [provider_router.ProviderCandidate("anthropic", "claude-sonnet-4-6")],
+    )
+    monkeypatch.setattr(
+        assignment_requirement_grading_provider,
+        "build_assignment_requirement_grading_provider",
+        lambda *, provider_name, model_name: (
+            assignment_requirement_grading_provider_double
+        ),
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/orchestrator/run",
+        json={
+            "operation": "grade_all",
+            "session_id": "session-newer",
+            "student_id": "student-ada",
+            "assignment_requirement_id": "assignment-mcp",
+            "source_type": "local_folder",
+            "local_path": str(project_root),
+        },
+        headers={"X-Trace-Id": "trace-orchestrator-grade-all"},
+    )
+
+    assert response.status_code == 200
+    response_json = response.json()
+    assert response_json["trace_id"] == "trace-orchestrator-grade-all"
+    assert response_json["requested_operation"] == "grade_all"
+    assert response_json["status"] == "success"
+    assert response_json["reasoning_type"] == "composite_grading_plan"
+    assert (
+        response_json["reasoning_summary"]
+        == "Concept and assignment-requirement grading both completed."
+    )
+    assert [turn["response_type"] for turn in response_json["planner_turns"]] == [
+        "TOOL_REQUEST",
+        "CONTEXT_UPDATE",
+        "TOOL_REQUEST",
+        "FINAL_REVIEW",
+    ]
+    assert [tool_result["tool_name"] for tool_result in response_json["tool_results"]] == [
+        "extract_concepts",
+        "extract_assignment_requirements",
+        "grade_concepts",
+        "grade_assignment_requirements",
+    ]
+    assert all(
+        tool_result["status"] == "success"
+        for tool_result in response_json["tool_results"]
+    )
+    assert response_json["result"] == {
+        "extract_concepts_response": {
+            "session_id": "session-newer",
+            "concepts": concepts,
+            "warnings": [],
+        },
+        "extract_assignment_requirements_response": {
+            "session_id": "session-newer",
+            "assignment_requirements": assignment_requirements,
+            "warnings": [],
+        },
+        "grade_concepts_response": {
+            "student_id": "student-ada",
+            "student_code": "STU-001",
+            "student_full_name": "Ada Lovelace",
+            "session_id": "session-newer",
+            "source_type": "local_folder",
+            "repo_url": None,
+            "local_path": str(project_root),
+            "zip_path": None,
+            "concept_scores": [
+                {
+                    "concept": "Tool registration",
+                    "score": 25,
+                    "max_score": 50,
+                    "coverage_level": "strong",
+                    "evidence": [
+                        "README explains O(log n) search complexity.",
+                        "Code implements binary search rather than linear scan.",
+                    ],
+                    "deductions": ["Schema validation detail is brief."],
+                }
+            ],
+            "warnings": [],
+        },
+        "grade_assignment_requirements_response": {
+            "student_id": "student-ada",
+            "student_code": "STU-001",
+            "student_full_name": "Ada Lovelace",
+            "session_id": "session-newer",
+            "assignment_requirement_id": "assignment-mcp",
+            "assignment_title": "MCP Integration Project",
+            "source_type": "local_folder",
+            "repo_url": None,
+            "local_path": str(project_root),
+            "zip_path": None,
+            "assignment_requirement_scores": [
+                {
+                    "requirement_title": "Repository submission",
+                    "requirement_type": "mandatory_deliverable",
+                    "score": 25,
+                    "max_score": 50,
+                    "coverage_level": "strong",
+                    "evidence": [
+                        "README describes the MCP workflow implementation.",
+                        "Code registers MCP tools and calls them from the review flow.",
+                    ],
+                    "deductions": ["Automated validation coverage is limited."],
+                }
+            ],
+            "warnings": [],
+        },
+    }
+    assert response_json["warnings"] == ["Planner context update: Run both grading tools."]
+    assert response_json["error"] == {
+        "error_code": None,
+        "message": None,
+        "details": None,
+    }
+
+    planner_request, _, _ = planner_provider.requests[0]
+    prompt_fields = {
+        field.label: field.value for field in planner_request.prompt_input_fields
+    }
+    assert (
+        prompt_fields["Completion condition"]
+        == "Completion is satisfied only when concept_grading_completed is true and "
+        "assignment_requirement_grading_completed is true."
+    )
+    assert prompt_fields["Previous tool results"] == "(none)"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            """
+            SELECT
+              student_grades.concept_scores,
+              student_grades.assignment_requirement_scores,
+              assignment_submissions.status
+            FROM student_grades
+            JOIN assignment_submissions
+              ON assignment_submissions.id = student_grades.submission_id
+            WHERE student_grades.submission_id = ?
+            """,
+            ("submission-mcp",),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert row is not None
+    assert json.loads(row[0]) == response_json["result"]["grade_concepts_response"][
+        "concept_scores"
+    ]
+    assert json.loads(row[1]) == response_json["result"][
+        "grade_assignment_requirements_response"
+    ]["assignment_requirement_scores"]
+    assert row[2] == "assignment_requirements_graded"
+
+
+def test_run_review_orchestrator_returns_failed_response_from_planner_fallback(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """POST /orchestrator/run should surface planner fallbacks as structured failed runs."""
+    database_path = tmp_path / "reviewpilot.db"
+    _build_test_database(database_path)
+    _seed_session_concepts_json(
+        database_path=database_path,
+        session_id="session-empty",
+        concepts=[],
+    )
+    planner_provider = _RecordingStructuredExtractionProvider(
+        [
+            _build_fallback_turn(
+                error_code="no_progress_possible",
+                message="The planner cannot make progress with the available tools.",
+            )
+        ]
+    )
+
+    monkeypatch.setattr(
+        orchestrator_provider,
+        "build_orchestrator_planner_provider_candidates",
+        lambda: [provider_router.ProviderCandidate("anthropic", "claude-sonnet-4-6")],
+    )
+    monkeypatch.setattr(
+        orchestrator_provider,
+        "build_orchestrator_planner_provider",
+        lambda *, provider_name, model_name: planner_provider,
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/orchestrator/run",
+        json={
+            "operation": "synthesize_assignment_requirements",
+            "session_id": "session-empty",
+        },
+        headers={"X-Trace-Id": "trace-orchestrator-fallback"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "trace_id": "trace-orchestrator-fallback",
+        "requested_operation": "synthesize_assignment_requirements",
+        "status": "failed",
+        "reasoning_type": "failure_handling",
+        "reasoning_summary": "The planner cannot make progress with the available tools.",
+        "planner_turns": [
+            {
+                "turn_number": 1,
+                "response_type": "FALLBACK",
+                "reasoning_type": "failure_handling",
+                "reasoning_summary": (
+                    "The planner cannot make progress with the available tools."
+                ),
+                "checks": _build_orchestrator_planner_checks(),
+                "tool_calls": [],
+                "context_update": None,
+                "warnings": [],
+                "error": {
+                    "error_code": "no_progress_possible",
+                    "message": "The planner cannot make progress with the available tools.",
+                    "details": None,
+                },
+            }
+        ],
+        "tool_results": [],
+        "result": {
+            "extract_concepts_response": None,
+            "extract_assignment_requirements_response": None,
+            "grade_concepts_response": None,
+            "grade_assignment_requirements_response": None,
+        },
+        "warnings": [],
+        "error": {
+            "error_code": "no_progress_possible",
+            "message": "The planner cannot make progress with the available tools.",
+            "details": None,
+        },
+    }
+
+
+def test_run_review_orchestrator_returns_structured_failure_for_unimplemented_rubric_grading(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """POST /orchestrator/run should fail cleanly when rubric grading is requested."""
+    database_path = tmp_path / "reviewpilot.db"
+    project_root = _build_test_project_folder(tmp_path / "student-project")
+    _build_test_database(database_path)
+    _seed_session_concepts_json(
+        database_path=database_path,
+        session_id="session-newer",
+        concepts=[],
+    )
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/orchestrator/run",
+        json={
+            "operation": "grade_rubrics",
+            "session_id": "session-newer",
+            "student_id": "student-ada",
+            "assignment_requirement_id": "assignment-mcp",
+            "source_type": "local_folder",
+            "local_path": str(project_root),
+        },
+        headers={"X-Trace-Id": "trace-orchestrator-rubrics"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "trace_id": "trace-orchestrator-rubrics",
+        "requested_operation": "grade_rubrics",
+        "status": "failed",
+        "reasoning_type": "failure_handling",
+        "reasoning_summary": "Rubric grading is not implemented in the orchestrator yet.",
+        "planner_turns": [],
+        "tool_results": [],
+        "result": {
+            "extract_concepts_response": None,
+            "extract_assignment_requirements_response": None,
+            "grade_concepts_response": None,
+            "grade_assignment_requirements_response": None,
+        },
+        "warnings": [],
+        "error": {
+            "error_code": "rubric_grading_not_implemented",
+            "message": "Rubric grading is not implemented in the orchestrator yet.",
+            "details": None,
+        },
+    }
+
+
+def test_run_review_orchestrator_returns_structured_404_for_missing_session(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """POST /orchestrator/run should return a structured 404 when the session is missing."""
+    database_path = tmp_path / "reviewpilot.db"
+    _build_test_database(database_path)
+    monkeypatch.setenv("REVIEWPILOT_DB_PATH", str(database_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/orchestrator/run",
+        json={
+            "operation": "synthesize_concepts",
+            "session_id": "session-missing",
+        },
+        headers={"X-Trace-Id": "trace-orchestrator-missing-session"},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {
+            "code": "session_not_found",
+            "message": "Unable to find the requested session.",
+            "trace_id": "trace-orchestrator-missing-session",
+        }
+    }
