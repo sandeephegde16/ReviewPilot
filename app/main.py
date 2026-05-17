@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from fastapi import Body, FastAPI, Header
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.assignment_requirement_extraction_spec import (
@@ -26,7 +27,9 @@ from app.assignment_requirement_extraction_spec import (
     DEFAULT_TOOL_NAME as DEFAULT_ASSIGNMENT_TOOL_NAME,
 )
 from app.assignment_requirement_store import (
+    StoredAssignmentRequirementNotFoundError,
     save_assignment_requirement_requirements_json,
+    save_session_assignment_requirements_document,
 )
 from app.concept_extraction_spec import (
     CONCEPT_EXTRACTION_SPEC,
@@ -70,9 +73,13 @@ from app.schemas import (
     ExtractConceptsResponse,
     GradeConceptsRequest,
     GradeConceptsResponse,
+    SessionAssignmentRequirementsResponse,
+    SessionConceptsResponse,
     SessionSubmission,
     SessionSummary,
     StudentSubmission,
+    UpdateSessionAssignmentRequirementsRequest,
+    UpdateSessionConceptsRequest,
 )
 from app.session_content_store import save_session_concepts_json
 from app.session_store import (
@@ -81,6 +88,8 @@ from app.session_store import (
     StudentNotFoundError,
     StudentSubmissionNotFoundError,
     get_concept_grading_context,
+    get_session_assignment_requirements,
+    get_session_concepts,
     get_session_extraction_source,
     list_session_assignment_requirement_sources,
     list_session_submissions,
@@ -93,12 +102,15 @@ from app.structured_extraction import (
     StructuredExtractionSpec,
     execute_structured_extraction,
 )
-from app.student_grade_store import save_student_concept_grade_json
+from app.student_grade_store import save_student_concept_scores
 from app.telemetry import WorkflowTelemetryEmitter, emit_event
+from app.ui_routes import get_ui_static_directory, ui_router
 
 configure_logging()
 
 app = FastAPI(title="ReviewPilot", version="0.1.0")
+app.mount("/static", StaticFiles(directory=get_ui_static_directory()), name="static")
+app.include_router(ui_router)
 
 
 def _elapsed_ms(start_time: float) -> float:
@@ -162,8 +174,8 @@ def _build_request_telemetry(
     trace_id: str,
     session_id: str,
     tool_name: str,
-    reasoning_level: str,
-    reasoning_type: str,
+    reasoning_level: str | None,
+    reasoning_type: str | None,
     step_prefix: str,
 ) -> WorkflowTelemetryEmitter:
     """Build a request-scoped telemetry emitter for one extraction endpoint."""
@@ -439,6 +451,354 @@ def extract_session_assignment_requirements(
     )
 
 
+@app.get(
+    "/sessions/{session_id}/concepts",
+    response_model=SessionConceptsResponse,
+    responses={404: {"model": ApiErrorResponse}, 500: {"model": ApiErrorResponse}},
+    tags=["sessions"],
+)
+def get_stored_session_concepts(
+    session_id: str,
+    x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
+) -> SessionConceptsResponse | JSONResponse:
+    """Return the stored concepts document for one session."""
+    trace_id = x_trace_id or uuid4().hex
+    start_time = perf_counter()
+    request_telemetry = _build_request_telemetry(
+        trace_id=trace_id,
+        session_id=session_id,
+        tool_name="get_session_concepts",
+        reasoning_level=None,
+        reasoning_type=None,
+        step_prefix="get_session_concepts",
+    )
+    request_telemetry.emit(
+        step_suffix="request_received",
+        validation_status="pending",
+        retry_count=0,
+    )
+
+    try:
+        concepts_document = get_session_concepts(
+            database_path=get_database_path(),
+            session_id=session_id,
+            trace_id=trace_id,
+        )
+    except SessionNotFoundError:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="session_not_found",
+        )
+        return _build_error_response(
+            status_code=404,
+            code="session_not_found",
+            message="Unable to find the requested session.",
+            trace_id=trace_id,
+        )
+    except (sqlite3.Error, ValueError):
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="session_concepts_query_failed",
+        )
+        return _build_error_response(
+            status_code=500,
+            code="session_concepts_query_failed",
+            message="Unable to fetch the stored concepts for the session.",
+            trace_id=trace_id,
+        )
+
+    request_telemetry.emit(
+        step_suffix="session_concepts_fetched",
+        validation_status="passed",
+        retry_count=0,
+        details={"concept_count": len(concepts_document.concepts)},
+    )
+    request_telemetry.emit(
+        step_suffix="request_completed",
+        validation_status="passed",
+        retry_count=0,
+        elapsed_ms=_elapsed_ms(start_time),
+    )
+    return concepts_document
+
+
+@app.put(
+    "/sessions/{session_id}/concepts",
+    response_model=SessionConceptsResponse,
+    responses={404: {"model": ApiErrorResponse}, 500: {"model": ApiErrorResponse}},
+    tags=["sessions"],
+)
+def update_stored_session_concepts(
+    session_id: str,
+    request: Annotated[UpdateSessionConceptsRequest, Body()],
+    x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
+) -> SessionConceptsResponse | JSONResponse:
+    """Replace the stored concepts document for one session."""
+    trace_id = x_trace_id or uuid4().hex
+    start_time = perf_counter()
+    request_telemetry = _build_request_telemetry(
+        trace_id=trace_id,
+        session_id=session_id,
+        tool_name="update_session_concepts",
+        reasoning_level=None,
+        reasoning_type=None,
+        step_prefix="update_session_concepts",
+    )
+    request_telemetry.emit(
+        step_suffix="request_received",
+        validation_status="pending",
+        retry_count=0,
+        details={"concept_count": len(request.concepts)},
+    )
+
+    try:
+        save_session_concepts_json(
+            database_path=get_database_path(),
+            session_id=session_id,
+            concepts=request.concepts,
+            trace_id=trace_id,
+        )
+        concepts_document = get_session_concepts(
+            database_path=get_database_path(),
+            session_id=session_id,
+            trace_id=trace_id,
+        )
+    except SessionNotFoundError:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="session_not_found",
+        )
+        return _build_error_response(
+            status_code=404,
+            code="session_not_found",
+            message="Unable to find the requested session.",
+            trace_id=trace_id,
+        )
+    except (sqlite3.Error, ValueError):
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="session_concepts_persistence_failed",
+        )
+        return _build_error_response(
+            status_code=500,
+            code="session_concepts_persistence_failed",
+            message="Unable to save the stored concepts for the session.",
+            trace_id=trace_id,
+        )
+
+    request_telemetry.emit(
+        step_suffix="session_concepts_persisted",
+        validation_status="passed",
+        retry_count=0,
+        details={"concept_count": len(concepts_document.concepts)},
+    )
+    request_telemetry.emit(
+        step_suffix="request_completed",
+        validation_status="passed",
+        retry_count=0,
+        elapsed_ms=_elapsed_ms(start_time),
+    )
+    return concepts_document
+
+
+@app.get(
+    "/sessions/{session_id}/assignment-requirements",
+    response_model=SessionAssignmentRequirementsResponse,
+    responses={404: {"model": ApiErrorResponse}, 500: {"model": ApiErrorResponse}},
+    tags=["sessions"],
+)
+def get_stored_session_assignment_requirements(
+    session_id: str,
+    x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
+) -> SessionAssignmentRequirementsResponse | JSONResponse:
+    """Return the stored assignment requirements document for one session."""
+    trace_id = x_trace_id or uuid4().hex
+    start_time = perf_counter()
+    request_telemetry = _build_request_telemetry(
+        trace_id=trace_id,
+        session_id=session_id,
+        tool_name="get_session_assignment_requirements",
+        reasoning_level=None,
+        reasoning_type=None,
+        step_prefix="get_session_assignment_requirements",
+    )
+    request_telemetry.emit(
+        step_suffix="request_received",
+        validation_status="pending",
+        retry_count=0,
+    )
+
+    try:
+        assignment_requirements_document = get_session_assignment_requirements(
+            database_path=get_database_path(),
+            session_id=session_id,
+            trace_id=trace_id,
+        )
+    except SessionNotFoundError:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="session_not_found",
+        )
+        return _build_error_response(
+            status_code=404,
+            code="session_not_found",
+            message="Unable to find the requested session.",
+            trace_id=trace_id,
+        )
+    except (sqlite3.Error, ValueError):
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="assignment_requirements_query_failed",
+        )
+        return _build_error_response(
+            status_code=500,
+            code="assignment_requirements_query_failed",
+            message="Unable to fetch the stored assignment requirements for the session.",
+            trace_id=trace_id,
+        )
+
+    request_telemetry.emit(
+        step_suffix="assignment_requirements_fetched",
+        validation_status="passed",
+        retry_count=0,
+        details={
+            "assignment_requirement_count": len(
+                assignment_requirements_document.assignment_requirements
+            )
+        },
+    )
+    request_telemetry.emit(
+        step_suffix="request_completed",
+        validation_status="passed",
+        retry_count=0,
+        elapsed_ms=_elapsed_ms(start_time),
+    )
+    return assignment_requirements_document
+
+
+@app.put(
+    "/sessions/{session_id}/assignment-requirements",
+    response_model=SessionAssignmentRequirementsResponse,
+    responses={404: {"model": ApiErrorResponse}, 500: {"model": ApiErrorResponse}},
+    tags=["sessions"],
+)
+def update_stored_session_assignment_requirements(
+    session_id: str,
+    request: Annotated[UpdateSessionAssignmentRequirementsRequest, Body()],
+    x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
+) -> SessionAssignmentRequirementsResponse | JSONResponse:
+    """Replace the stored assignment requirements document for one session."""
+    trace_id = x_trace_id or uuid4().hex
+    start_time = perf_counter()
+    request_telemetry = _build_request_telemetry(
+        trace_id=trace_id,
+        session_id=session_id,
+        tool_name="update_session_assignment_requirements",
+        reasoning_level=None,
+        reasoning_type=None,
+        step_prefix="update_session_assignment_requirements",
+    )
+    request_telemetry.emit(
+        step_suffix="request_received",
+        validation_status="pending",
+        retry_count=0,
+        details={
+            "assignment_requirement_count": len(request.assignment_requirements),
+        },
+    )
+
+    try:
+        save_session_assignment_requirements_document(
+            database_path=get_database_path(),
+            session_id=session_id,
+            assignment_requirements=request.assignment_requirements,
+            trace_id=trace_id,
+        )
+        assignment_requirements_document = get_session_assignment_requirements(
+            database_path=get_database_path(),
+            session_id=session_id,
+            trace_id=trace_id,
+        )
+    except SessionNotFoundError:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="session_not_found",
+        )
+        return _build_error_response(
+            status_code=404,
+            code="session_not_found",
+            message="Unable to find the requested session.",
+            trace_id=trace_id,
+        )
+    except StoredAssignmentRequirementNotFoundError:
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="assignment_requirement_not_found",
+        )
+        return _build_error_response(
+            status_code=404,
+            code="assignment_requirement_not_found",
+            message="Unable to find one or more assignment requirements for the session.",
+            trace_id=trace_id,
+        )
+    except (sqlite3.Error, ValueError):
+        request_telemetry.emit(
+            step_suffix="request_failed",
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=_elapsed_ms(start_time),
+            failure_reason="assignment_requirements_persistence_failed",
+        )
+        return _build_error_response(
+            status_code=500,
+            code="assignment_requirements_persistence_failed",
+            message="Unable to save the stored assignment requirements for the session.",
+            trace_id=trace_id,
+        )
+
+    request_telemetry.emit(
+        step_suffix="assignment_requirements_persisted",
+        validation_status="passed",
+        retry_count=0,
+        details={
+            "assignment_requirement_count": len(
+                assignment_requirements_document.assignment_requirements
+            )
+        },
+    )
+    request_telemetry.emit(
+        step_suffix="request_completed",
+        validation_status="passed",
+        retry_count=0,
+        elapsed_ms=_elapsed_ms(start_time),
+    )
+    return assignment_requirements_document
+
+
 @app.post(
     "/grade/concepts",
     response_model=GradeConceptsResponse,
@@ -627,12 +987,11 @@ def grade_submission_concepts(
         )
 
     try:
-        save_student_concept_grade_json(
+        save_student_concept_scores(
             database_path=get_database_path(),
             session_id=grading_context.session_id,
-            assignment_requirement_id=grading_context.assignment_requirement_id,
-            student_id=grading_context.student_id,
-            concept_grade_response=extraction_result.response,
+            submission_id=grading_context.submission_id,
+            concept_scores=extraction_result.response.concept_scores,
             trace_id=trace_id,
         )
     except sqlite3.Error:
@@ -653,7 +1012,7 @@ def grade_submission_concepts(
         )
 
     request_telemetry.emit(
-        step_suffix="concept_grade_persisted",
+        step_suffix="concept_scores_persisted",
         provider_name=extraction_result.provider_name,
         model_name=extraction_result.model_name,
         validation_status="passed",

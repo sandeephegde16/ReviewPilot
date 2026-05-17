@@ -58,20 +58,15 @@ CREATE TABLE IF NOT EXISTS assignment_submissions (
 
 CREATE TABLE IF NOT EXISTS student_grades (
   id TEXT PRIMARY KEY,
-  session_content_id TEXT NOT NULL,
-  assignment_requirement_id TEXT NOT NULL,
-  student_id TEXT NOT NULL,
-  concept_grade TEXT NOT NULL DEFAULT '[]'
-    CHECK (json_valid(concept_grade)),
-  assignment_requirement_grade TEXT NOT NULL DEFAULT '[]'
-    CHECK (json_valid(assignment_requirement_grade)),
-  rubric_grade TEXT NOT NULL DEFAULT '[]'
-    CHECK (json_valid(rubric_grade)),
+  submission_id TEXT NOT NULL UNIQUE,
+  concept_scores TEXT NOT NULL DEFAULT '[]'
+    CHECK (json_valid(concept_scores)),
+  assignment_requirement_scores TEXT NOT NULL DEFAULT '[]'
+    CHECK (json_valid(assignment_requirement_scores)),
+  rubric_scores TEXT NOT NULL DEFAULT '[]'
+    CHECK (json_valid(rubric_scores)),
   created_at TEXT NOT NULL,
-  UNIQUE (session_content_id, assignment_requirement_id, student_id),
-  FOREIGN KEY (session_content_id) REFERENCES session_content(id),
-  FOREIGN KEY (assignment_requirement_id) REFERENCES assignment_requirement(id),
-  FOREIGN KEY (student_id) REFERENCES students(id)
+  FOREIGN KEY (submission_id) REFERENCES assignment_submissions(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_assignment_requirement_session_content_id
@@ -89,11 +84,5 @@ CREATE INDEX IF NOT EXISTS idx_assignment_submissions_status
 CREATE INDEX IF NOT EXISTS idx_assignment_submissions_submitted_at
   ON assignment_submissions (submitted_at);
 
-CREATE INDEX IF NOT EXISTS idx_student_grades_session_content_id
-  ON student_grades (session_content_id);
-
-CREATE INDEX IF NOT EXISTS idx_student_grades_assignment_requirement_id
-  ON student_grades (assignment_requirement_id);
-
-CREATE INDEX IF NOT EXISTS idx_student_grades_student_id
-  ON student_grades (student_id);
+CREATE INDEX IF NOT EXISTS idx_student_grades_submission_id
+  ON student_grades (submission_id);

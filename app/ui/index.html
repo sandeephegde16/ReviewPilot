@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Axiom</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-row">
+          <div class="brand-mark" aria-hidden="true">
+            <span class="brand-mark-dot"></span>
+            <span class="brand-mark-bar"></span>
+          </div>
+          <span class="brand-name">Axiom</span>
+        </div>
+
+        <nav class="sidebar-nav" aria-label="Primary">
+          <a class="nav-item" data-route="/dashboard" href="/dashboard">
+            <span class="nav-icon" data-icon="dashboard"></span>
+            <span>Dashboard</span>
+          </a>
+
+          <div class="nav-group">
+            <a class="nav-item" data-route="/courses" href="/courses">
+              <span class="nav-icon" data-icon="courses"></span>
+              <span>Courses</span>
+              <span class="nav-chevron" aria-hidden="true"></span>
+            </a>
+            <a class="nav-subitem" data-route="/courses" href="/courses">
+              <span class="nav-subitem-dot" aria-hidden="true"></span>
+              <span>EAG V3</span>
+            </a>
+          </div>
+
+          <a class="nav-item" data-route="/calendar" href="/calendar">
+            <span class="nav-icon" data-icon="calendar"></span>
+            <span>Calendar</span>
+          </a>
+
+          <a class="nav-item" data-route="/grades" href="/grades">
+            <span class="nav-icon" data-icon="grades"></span>
+            <span>Grades</span>
+          </a>
+
+          <a class="nav-item" data-route="/assignments" href="/assignments">
+            <span class="nav-icon" data-icon="assignments"></span>
+            <span>Assignments</span>
+          </a>
+        </nav>
+
+        <div class="sidebar-footer">
+          <a class="nav-item footer-nav-item" data-route="/settings" href="/settings">
+            <span class="nav-icon" data-icon="settings"></span>
+            <span>Settings</span>
+          </a>
+          <button class="collapse-button" type="button">
+            <span class="nav-icon" data-icon="collapse"></span>
+            <span>Collapse</span>
+          </button>
+        </div>
+      </aside>
+
+      <div class="content-shell">
+        <header class="topbar">
+          <div class="topbar-page-label" id="topbar-page-label">Assignments</div>
+          <div class="topbar-actions">
+            <label class="topbar-search" aria-label="Search">
+              <span class="topbar-search-icon" data-icon="search"></span>
+              <input type="search" placeholder="Search..." />
+              <span class="topbar-shortcut">⌘ K</span>
+            </label>
+            <button class="topbar-icon-button" type="button" aria-label="Notifications">
+              <span data-icon="bell"></span>
+              <span class="notification-badge">1</span>
+            </button>
+            <button class="avatar-button" type="button" aria-label="Profile">
+              <span class="avatar-circle">S</span>
+            </button>
+          </div>
+        </header>
+
+        <main class="page-shell" id="page-shell">
+          <section class="page-header">
+            <div>
+              <h1 class="page-title" id="page-title">Assignments</h1>
+              <p class="page-subtitle" id="page-subtitle">
+                Review session deliverables and student submissions.
+              </p>
+            </div>
+            <div class="page-header-actions" id="page-header-actions"></div>
+          </section>
+
+          <section class="page-content" id="page-content" aria-live="polite"></section>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

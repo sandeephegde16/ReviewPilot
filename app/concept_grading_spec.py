@@ -116,6 +116,7 @@ def prepare_concept_grading(
             ]
         },
         telemetry_details={
+            "submission_id": grading_source.submission_id,
             "session_id": grading_source.session_id,
             "student_id": grading_source.student_id,
             "operation_name": DEFAULT_OPERATION_NAME,

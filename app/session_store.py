@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from time import perf_counter
+from typing import Any
 
 from app.schemas import (
     AssignmentRequirementExtractionSource,
     ConceptGradingContext,
+    ConceptScoreResult,
+    ExtractedAssignmentRequirement,
+    GradeableConcept,
+    SessionAssignmentRequirementsResponse,
+    SessionConceptsResponse,
     SessionExtractionSource,
     SessionSubmission,
     SessionSummary,
+    StoredAssignmentRequirementResult,
     StudentSubmission,
     SubmissionSourceType,
 )
@@ -39,13 +47,32 @@ def _build_read_only_uri(database_path: Path) -> str:
     return f"file:{database_path.resolve()}?mode=ro"
 
 
+def _load_json_array(*, raw_json: str, field_name: str) -> list[object]:
+    """Decode one JSON array column and reject non-array payloads."""
+    parsed_payload = json.loads(raw_json)
+    if not isinstance(parsed_payload, list):
+        raise ValueError(f"{field_name} must decode to a JSON array.")
+    return parsed_payload
+
+
+def _load_json_object_array(*, raw_json: str, field_name: str) -> list[dict[str, Any]]:
+    """Decode one JSON array column and require object entries."""
+    parsed_payload = _load_json_array(raw_json=raw_json, field_name=field_name)
+    normalized_payload: list[dict[str, Any]] = []
+    for index, item in enumerate(parsed_payload):
+        if not isinstance(item, dict):
+            raise ValueError(f"{field_name}[{index}] must decode to a JSON object.")
+        normalized_payload.append(item)
+    return normalized_payload
+
+
 def list_session_summaries(
     *,
     database_path: Path,
     trace_id: str,
     review_id: str | None = None,
 ) -> list[SessionSummary]:
-    """Fetch all stored session titles and topics from SQLite."""
+    """Fetch all stored session ids, titles, and topics from SQLite."""
     start_time = perf_counter()
     emit_event(
         trace_id=trace_id,
@@ -62,7 +89,7 @@ def list_session_summaries(
     try:
         rows = connection.execute(
             """
-            SELECT session_title, session_topic
+            SELECT id AS session_id, session_title, session_topic
             FROM session_content
             ORDER BY created_at DESC, id ASC
             """
@@ -184,6 +211,100 @@ def get_session_extraction_source(
     return extraction_source
 
 
+def get_session_concepts(
+    *,
+    database_path: Path,
+    session_id: str,
+    trace_id: str,
+    review_id: str | None = None,
+) -> SessionConceptsResponse:
+    """Fetch the stored concepts document for one session."""
+    start_time = perf_counter()
+    emit_event(
+        trace_id=trace_id,
+        review_id=review_id,
+        session_id=session_id,
+        step_name="get_session_concepts.query_started",
+        tool_name=None,
+        data_store="sqlite",
+        provider_name=None,
+        validation_status="pending",
+        retry_count=0,
+    )
+    connection = sqlite3.connect(_build_read_only_uri(database_path), uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        row = connection.execute(
+            """
+            SELECT id, concepts_json
+            FROM session_content
+            WHERE id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+            emit_event(
+                trace_id=trace_id,
+                review_id=review_id,
+                session_id=session_id,
+                step_name="get_session_concepts.session_not_found",
+                tool_name=None,
+                data_store="sqlite",
+                provider_name=None,
+                validation_status="failed",
+                retry_count=0,
+                elapsed_ms=elapsed_ms,
+                failure_reason="session_not_found",
+            )
+            raise SessionNotFoundError(session_id)
+
+        concepts = [
+            GradeableConcept.model_validate(concept_item)
+            for concept_item in _load_json_array(
+                raw_json=str(row["concepts_json"]),
+                field_name="concepts_json",
+            )
+        ]
+    except SessionNotFoundError:
+        raise
+    except (sqlite3.Error, ValueError) as exc:
+        elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+        emit_event(
+            trace_id=trace_id,
+            review_id=review_id,
+            session_id=session_id,
+            step_name="get_session_concepts.query_failed",
+            tool_name=None,
+            data_store="sqlite",
+            provider_name=None,
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=elapsed_ms,
+            failure_reason=str(exc),
+        )
+        raise
+    finally:
+        connection.close()
+
+    response = SessionConceptsResponse(session_id=str(row["id"]), concepts=concepts)
+    elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+    emit_event(
+        trace_id=trace_id,
+        review_id=review_id,
+        session_id=session_id,
+        step_name="get_session_concepts.query_completed",
+        tool_name=None,
+        data_store="sqlite",
+        provider_name=None,
+        validation_status="passed",
+        retry_count=0,
+        elapsed_ms=elapsed_ms,
+        details={"concept_count": len(response.concepts)},
+    )
+    return response
+
+
 def list_session_assignment_requirement_sources(
     *,
     database_path: Path,
@@ -280,6 +401,139 @@ def list_session_assignment_requirement_sources(
         elapsed_ms=elapsed_ms,
     )
     return assignment_sources
+
+
+def get_session_assignment_requirements(
+    *,
+    database_path: Path,
+    session_id: str,
+    trace_id: str,
+    review_id: str | None = None,
+) -> SessionAssignmentRequirementsResponse:
+    """Fetch the stored assignment requirements document and metadata for one session."""
+    start_time = perf_counter()
+    emit_event(
+        trace_id=trace_id,
+        review_id=review_id,
+        session_id=session_id,
+        step_name="get_session_assignment_requirements.query_started",
+        tool_name=None,
+        data_store="sqlite",
+        provider_name=None,
+        validation_status="pending",
+        retry_count=0,
+    )
+    connection = sqlite3.connect(_build_read_only_uri(database_path), uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        session_exists = connection.execute(
+            """
+            SELECT 1
+            FROM session_content
+            WHERE id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if session_exists is None:
+            elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+            emit_event(
+                trace_id=trace_id,
+                review_id=review_id,
+                session_id=session_id,
+                step_name="get_session_assignment_requirements.session_not_found",
+                tool_name=None,
+                data_store="sqlite",
+                provider_name=None,
+                validation_status="failed",
+                retry_count=0,
+                elapsed_ms=elapsed_ms,
+                failure_reason="session_not_found",
+            )
+            raise SessionNotFoundError(session_id)
+
+        rows = connection.execute(
+            """
+            SELECT
+              assignment_requirement.id AS assignment_requirement_id,
+              assignment_requirement.assignment_title AS assignment_title,
+              assignment_requirement.assignment_description AS assignment_description,
+              assignment_requirement.due_at AS due_at,
+              assignment_requirement.required_deliverables_json AS required_deliverables_json,
+              assignment_requirement.assignment_requirements_json AS assignment_requirements_json
+            FROM assignment_requirement
+            WHERE assignment_requirement.session_content_id = ?
+            ORDER BY assignment_requirement.created_at ASC, assignment_requirement.id ASC
+            """,
+            (session_id,),
+        ).fetchall()
+
+        assignment_requirements = [
+            StoredAssignmentRequirementResult(
+                assignment_requirement_id=str(row["assignment_requirement_id"]),
+                assignment_title=str(row["assignment_title"]),
+                assignment_description=str(row["assignment_description"]),
+                due_at=(
+                    str(row["due_at"])
+                    if row["due_at"] is not None
+                    else None
+                ),
+                required_deliverables=[
+                    str(deliverable)
+                    for deliverable in _load_json_array(
+                        raw_json=str(row["required_deliverables_json"]),
+                        field_name="required_deliverables_json",
+                    )
+                ],
+                requirements=[
+                    ExtractedAssignmentRequirement.model_validate(requirement_item)
+                    for requirement_item in _load_json_array(
+                        raw_json=str(row["assignment_requirements_json"]),
+                        field_name="assignment_requirements_json",
+                    )
+                ],
+            )
+            for row in rows
+        ]
+    except SessionNotFoundError:
+        raise
+    except (sqlite3.Error, ValueError) as exc:
+        elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+        emit_event(
+            trace_id=trace_id,
+            review_id=review_id,
+            session_id=session_id,
+            step_name="get_session_assignment_requirements.query_failed",
+            tool_name=None,
+            data_store="sqlite",
+            provider_name=None,
+            validation_status="failed",
+            retry_count=0,
+            elapsed_ms=elapsed_ms,
+            failure_reason=str(exc),
+        )
+        raise
+    finally:
+        connection.close()
+
+    response = SessionAssignmentRequirementsResponse(
+        session_id=session_id,
+        assignment_requirements=assignment_requirements,
+    )
+    elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
+    emit_event(
+        trace_id=trace_id,
+        review_id=review_id,
+        session_id=session_id,
+        step_name="get_session_assignment_requirements.query_completed",
+        tool_name=None,
+        data_store="sqlite",
+        provider_name=None,
+        validation_status="passed",
+        retry_count=0,
+        elapsed_ms=elapsed_ms,
+        details={"assignment_requirement_count": len(response.assignment_requirements)},
+    )
+    return response
 
 
 def get_concept_grading_context(
@@ -447,6 +701,7 @@ def get_concept_grading_context(
         raise AmbiguousStudentSubmissionError(student_id)
 
     grading_context = ConceptGradingContext(
+        submission_id=resolved_submission["submission_id"],
         student_id=student_row["id"],
         student_code=student_row["student_code"],
         student_full_name=student_row["full_name"],
@@ -472,6 +727,7 @@ def get_concept_grading_context(
         retry_count=0,
         elapsed_ms=elapsed_ms,
         details={
+            "submission_id": resolved_submission["submission_id"],
             "student_id": student_id,
             "assignment_requirement_id": resolved_submission["assignment_requirement_id"],
         },
@@ -589,12 +845,18 @@ def list_session_submissions(
               assignment_submissions.youtube_demo_url AS youtube_demo_url,
               assignment_submissions.linkedin_url AS linkedin_url,
               assignment_submissions.status AS status,
-              assignment_submissions.submitted_at AS submitted_at
+              assignment_submissions.submitted_at AS submitted_at,
+              COALESCE(student_grades.concept_scores, '[]') AS concept_scores,
+              COALESCE(student_grades.assignment_requirement_scores, '[]')
+                AS assignment_requirement_scores,
+              COALESCE(student_grades.rubric_scores, '[]') AS rubric_scores
             FROM assignment_requirement
             JOIN assignment_submissions
               ON assignment_submissions.assignment_requirement_id = assignment_requirement.id
             JOIN students
               ON students.id = assignment_submissions.student_id
+            LEFT JOIN student_grades
+              ON student_grades.submission_id = assignment_submissions.id
             WHERE assignment_requirement.session_content_id = ?
             ORDER BY assignment_submissions.submitted_at DESC, assignment_submissions.id ASC
             """,
@@ -618,7 +880,7 @@ def list_session_submissions(
     finally:
         connection.close()
 
-    session_submissions = [SessionSubmission.model_validate(dict(row)) for row in rows]
+    session_submissions = [_build_session_submission(row) for row in rows]
     elapsed_ms = round((perf_counter() - start_time) * 1000, 3)
     emit_event(
         trace_id=trace_id,
@@ -632,6 +894,27 @@ def list_session_submissions(
         elapsed_ms=elapsed_ms,
     )
     return session_submissions
+
+
+def _build_session_submission(row: sqlite3.Row) -> SessionSubmission:
+    """Build one session submission response with persisted grade payloads."""
+    submission_payload = dict(row)
+    submission_payload["concept_scores"] = [
+        ConceptScoreResult.model_validate(score_item)
+        for score_item in _load_json_object_array(
+            raw_json=str(row["concept_scores"]),
+            field_name="concept_scores",
+        )
+    ]
+    submission_payload["assignment_requirement_scores"] = _load_json_object_array(
+        raw_json=str(row["assignment_requirement_scores"]),
+        field_name="assignment_requirement_scores",
+    )
+    submission_payload["rubric_scores"] = _load_json_object_array(
+        raw_json=str(row["rubric_scores"]),
+        field_name="rubric_scores",
+    )
+    return SessionSubmission.model_validate(submission_payload)
 
 
 def list_student_submissions(

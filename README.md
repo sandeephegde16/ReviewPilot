@@ -4,7 +4,7 @@ ReviewPilot is an early bootstrap for an assignment review agent. The current re
 
 ## What is here now
 
-- `app/main.py`: FastAPI app with `GET /health`, `GET /allsessions`, `POST /sessions/{session_id}/extract-concepts`, `POST /sessions/{session_id}/extract-assignment-requirements`, `POST /grade/concepts`, `GET /sessions/{session_id}/submissions`, and `GET /students/{student_id}/submissions`
+- `app/main.py`: FastAPI app with `GET /health`, `GET /allsessions`, `GET /sessions/{session_id}/concepts`, `PUT /sessions/{session_id}/concepts`, `POST /sessions/{session_id}/extract-concepts`, `GET /sessions/{session_id}/assignment-requirements`, `PUT /sessions/{session_id}/assignment-requirements`, `POST /sessions/{session_id}/extract-assignment-requirements`, `POST /grade/concepts`, `GET /sessions/{session_id}/submissions`, and `GET /students/{student_id}/submissions`
 - `db/schema.sql`: SQLite schema for students, session content, assignment requirements, and submissions
 - `openapi/reviewpilot.openapi.yaml`: OpenAPI contract for the current HTTP endpoints
 - `DESIGN_SPEC.md`: target architecture and planned review flow
@@ -25,11 +25,16 @@ make db-init
 make run
 ```
 
-The app starts on `http://127.0.0.1:8000`. Available endpoints:
+The app starts on `http://127.0.0.1:8000`. The browser UI redirects `/` to
+`/assignments`. Available endpoints:
 
 - `GET /health`
 - `GET /allsessions`
+- `GET /sessions/{session_id}/concepts`
+- `PUT /sessions/{session_id}/concepts`
 - `POST /sessions/{session_id}/extract-concepts`
+- `GET /sessions/{session_id}/assignment-requirements`
+- `PUT /sessions/{session_id}/assignment-requirements`
 - `POST /sessions/{session_id}/extract-assignment-requirements`
 - `POST /grade/concepts`
 - `GET /sessions/{session_id}/submissions`
@@ -49,8 +54,8 @@ extracted requirement list to `assignment_requirement.assignment_requirements_js
 `POST /grade/concepts` reuses the same structured extraction stack, but it
 collects bounded project evidence first and only falls back across configured
 real models. It does not fall back to the heuristic provider. Successful
-concept grading also persists the full grading response JSON to
-`student_grades.concept_grade`.
+concept grading also persists the extracted concept scores JSON to
+`student_grades.concept_scores`.
 
 Available provider modes:
 
