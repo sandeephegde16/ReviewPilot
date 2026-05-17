@@ -460,7 +460,7 @@ If you want to understand the repo quickly, read files in this order:
 
 That sequence maps the public API, the request/response contracts, the shared LLM workflow path, the orchestrator loop, and the underlying storage model.
 
-## Exact Orchestrator Prompt Used
+## Prompt Used
 
 The following is the exact orchestrator planner instruction block currently used in the codebase. This comes from the `system_instruction_lines` and `repair_guidance_lines` used by the orchestrator planner request.
 
@@ -513,7 +513,7 @@ repair_guidance_lines=[
 ]
 ```
 
-## Prompt Evaluation Output
+## Test Output of Evaluator Prompt
 
 The following is the prompt-evaluation output for the orchestrator prompt above.
 
