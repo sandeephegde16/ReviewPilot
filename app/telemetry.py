@@ -46,7 +46,13 @@ def emit_event(
         "failure_reason": failure_reason,
         "details": details,
     }
-    logger.info(json.dumps(payload))
+    logger.info(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 @dataclass(frozen=True)

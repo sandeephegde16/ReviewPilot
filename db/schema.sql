@@ -46,7 +46,16 @@ CREATE TABLE IF NOT EXISTS assignment_submissions (
   linkedin_url TEXT,
   submitted_at TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'submitted'
-    CHECK (status IN ('submitted', 'under_review', 'reviewed', 'needs_resubmission')),
+    CHECK (
+      status IN (
+        'submitted',
+        'under_review',
+        'concepts_graded',
+        'assignment_requirements_graded',
+        'reviewed',
+        'needs_resubmission'
+      )
+    ),
   CHECK (
     (source_type = 'github_pr' AND repo_url IS NOT NULL) OR
     (source_type = 'local_folder' AND local_path IS NOT NULL) OR

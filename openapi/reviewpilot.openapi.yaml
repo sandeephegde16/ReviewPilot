@@ -18,13 +18,61 @@ paths:
                   type: string
                 type: object
                 title: Response Health Health Get
+  /orchestrator/run:
+    post:
+      tags:
+      - orchestrator
+      summary: Run Review Orchestrator Endpoint
+      description: Run the conversation-loop orchestrator for one requested ReviewPilot
+        operation.
+      operationId: run_review_orchestrator_endpoint_orchestrator_run_post
+      parameters:
+      - name: X-Trace-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Trace-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunReviewOrchestratorRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunReviewOrchestratorResponse'
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Not Found
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Internal Server Error
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /sessions/{session_id}/extract-concepts:
     post:
       tags:
       - sessions
       summary: Extract Session Concepts
-      description: Extract gradeable concepts for a session using normalized session
-        evidence and persist them to session_content.concepts_json.
+      description: Extract gradeable concepts and persist them to the session content
+        row.
       operationId: extract_session_concepts_sessions__session_id__extract_concepts_post
       parameters:
       - name: session_id
@@ -79,8 +127,8 @@ paths:
       tags:
       - sessions
       summary: Extract Session Assignment Requirements
-      description: Extract assignment requirements for a session from stored assignment
-        evidence and persist them to assignment_requirement.assignment_requirements_json.
+      description: Extract assignment requirements and persist them to assignment_requirement
+        rows.
       operationId: extract_session_assignment_requirements_sessions__session_id__extract_assignment_requirements_post
       parameters:
       - name: session_id
@@ -135,7 +183,7 @@ paths:
       tags:
       - sessions
       summary: Get Stored Session Concepts
-      description: Return the stored concepts document persisted for one session.
+      description: Return the stored concepts document for one session.
       operationId: get_stored_session_concepts_sessions__session_id__concepts_get
       parameters:
       - name: session_id
@@ -181,7 +229,7 @@ paths:
       tags:
       - sessions
       summary: Update Stored Session Concepts
-      description: Replace the stored concepts document persisted for one session.
+      description: Replace the stored concepts document for one session.
       operationId: update_stored_session_concepts_sessions__session_id__concepts_put
       parameters:
       - name: session_id
@@ -211,6 +259,53 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SessionConceptsResponse'
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Not Found
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Internal Server Error
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /sessions/{session_id}/assignments:
+    get:
+      tags:
+      - sessions
+      summary: Get Stored Session Assignments
+      description: Return the stored assignment metadata document for one session.
+      operationId: get_stored_session_assignments_sessions__session_id__assignments_get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: X-Trace-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Trace-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionAssignmentsResponse'
         '404':
           content:
             application/json:
@@ -333,9 +428,8 @@ paths:
       tags:
       - grading
       summary: Grade Submission Concepts
-      description: Grade a student's project against requested concepts using
-        collected project evidence and persist the concept scores payload to
-        student_grades.concept_scores.
+      description: Grade a student's project against requested concepts using collected
+        project evidence.
       operationId: grade_submission_concepts_grade_concepts_post
       parameters:
       - name: X-Trace-Id
@@ -359,6 +453,53 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GradeConceptsResponse'
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Not Found
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+          description: Internal Server Error
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /grade/assignment-requirements:
+    post:
+      tags:
+      - grading
+      summary: Grade Submission Assignment Requirements
+      description: Grade a student's project against requested assignment requirements.
+      operationId: grade_submission_assignment_requirements_grade_assignment_requirements_post
+      parameters:
+      - name: X-Trace-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Trace-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GradeAssignmentRequirementsRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GradeAssignmentRequirementsResponse'
         '404':
           content:
             application/json:
@@ -589,6 +730,180 @@ components:
       - requirements
       title: AssignmentRequirementExtractionResult
       description: Extracted requirements for one assignment row in the session.
+    AssignmentRequirementGradingCriterion:
+      properties:
+        requirement_type:
+          type: string
+          enum:
+          - mandatory_deliverable
+          - forbidden_project_type
+          - scoring_criterion
+          - evidence_expectation
+          title: Requirement Type
+          description: Canonical category for the requested assignment requirement.
+        title:
+          type: string
+          title: Title
+          description: Short assignment-requirement label that must be graded.
+        summary:
+          type: string
+          title: Summary
+          description: Brief explanation of what the requirement covers.
+        evidence:
+          items:
+            type: string
+          type: array
+          minItems: 1
+          title: Evidence
+          description: Stored assignment evidence that justifies grading this requirement.
+        max_score:
+          type: integer
+          minimum: 1.0
+          title: Max Score
+          description: Maximum number of points available for this assignment requirement.
+      type: object
+      required:
+      - requirement_type
+      - title
+      - summary
+      - evidence
+      - max_score
+      title: AssignmentRequirementGradingCriterion
+      description: One requested assignment requirement and its grading weight for
+        project scoring.
+    AssignmentRequirementScoreResult:
+      properties:
+        requirement_title:
+          type: string
+          title: Requirement Title
+          description: Assignment requirement label that was graded.
+        requirement_type:
+          type: string
+          enum:
+          - mandatory_deliverable
+          - forbidden_project_type
+          - scoring_criterion
+          - evidence_expectation
+          title: Requirement Type
+          description: Canonical category for the graded assignment requirement.
+        score:
+          type: integer
+          minimum: 25.0
+          title: Score
+          description: Awarded score for the assignment requirement, normalized to
+            a multiple of five between 25 and max_score.
+        max_score:
+          type: integer
+          minimum: 1.0
+          title: Max Score
+          description: Maximum number of points available for the assignment requirement.
+        coverage_level:
+          type: string
+          enum:
+          - missing
+          - weak
+          - partial
+          - strong
+          title: Coverage Level
+          description: Strength of requirement coverage observed in the project evidence.
+        evidence:
+          items:
+            type: string
+          type: array
+          minItems: 1
+          title: Evidence
+          description: Concrete project evidence supporting the awarded score.
+        deductions:
+          items:
+            type: string
+          type: array
+          title: Deductions
+          description: Reasons points were not awarded in full.
+      type: object
+      required:
+      - requirement_title
+      - requirement_type
+      - score
+      - max_score
+      - coverage_level
+      - evidence
+      title: AssignmentRequirementScoreResult
+      description: One evidence-backed score awarded to a requested assignment requirement.
+    ConceptGradingCriterion:
+      properties:
+        concept_name:
+          type: string
+          title: Concept Name
+          description: Concept label that must be graded.
+        summary:
+          type: string
+          title: Summary
+          description: Short explanation of what the concept covers.
+        grading_reason:
+          type: string
+          title: Grading Reason
+          description: Why this concept matters for grading.
+        max_score:
+          type: integer
+          minimum: 1.0
+          title: Max Score
+          description: Maximum number of points available for this concept.
+      type: object
+      required:
+      - concept_name
+      - summary
+      - grading_reason
+      - max_score
+      title: ConceptGradingCriterion
+      description: One requested concept and its grading weight for project scoring.
+    ConceptScoreResult:
+      properties:
+        concept:
+          type: string
+          title: Concept
+          description: Concept label that was graded.
+        score:
+          type: integer
+          minimum: 25.0
+          title: Score
+          description: Awarded score for the concept, normalized to a multiple of
+            five between 25 and max_score.
+        max_score:
+          type: integer
+          minimum: 1.0
+          title: Max Score
+          description: Maximum number of points available for the concept.
+        coverage_level:
+          type: string
+          enum:
+          - missing
+          - weak
+          - partial
+          - strong
+          title: Coverage Level
+          description: Strength of concept coverage observed in the project evidence.
+        evidence:
+          items:
+            type: string
+          type: array
+          minItems: 1
+          title: Evidence
+          description: Concrete project evidence supporting the awarded score.
+        deductions:
+          items:
+            type: string
+          type: array
+          title: Deductions
+          description: Reasons points were not awarded in full.
+      type: object
+      required:
+      - concept
+      - score
+      - max_score
+      - coverage_level
+      - evidence
+      title: ConceptScoreResult
+      description: One evidence-backed score awarded to a requested grading concept.
     ExtractAssignmentRequirementsRequest:
       properties:
         reasoning_level:
@@ -666,36 +981,6 @@ components:
       - concepts
       title: ExtractConceptsResponse
       description: Public response payload for extracted gradeable concepts.
-    SessionConceptsResponse:
-      properties:
-        session_id:
-          type: string
-          title: Session Id
-          description: Unique identifier for the session.
-        concepts:
-          items:
-            $ref: '#/components/schemas/GradeableConcept'
-          type: array
-          title: Concepts
-          description: Stored gradeable concepts currently persisted for the session.
-      type: object
-      required:
-      - session_id
-      - concepts
-      title: SessionConceptsResponse
-      description: Public response payload for the stored session concepts document.
-    UpdateSessionConceptsRequest:
-      properties:
-        concepts:
-          items:
-            $ref: '#/components/schemas/GradeableConcept'
-          type: array
-          title: Concepts
-          description: Stored gradeable concepts that should replace the session document.
-      type: object
-      title: UpdateSessionConceptsRequest
-      description: Public request payload for replacing the stored session concepts
-        document.
     ExtractedAssignmentRequirement:
       properties:
         requirement_type:
@@ -731,186 +1016,149 @@ components:
       title: ExtractedAssignmentRequirement
       description: One evidence-backed assignment requirement extracted from assignment
         text.
-    StoredAssignmentRequirementResult:
+    GradeAssignmentRequirementsRequest:
       properties:
+        student_id:
+          type: string
+          title: Student Id
+          description: Unique identifier for the student being graded.
+        session_id:
+          type: string
+          title: Session Id
+          description: Unique identifier for the related session.
         assignment_requirement_id:
           type: string
           title: Assignment Requirement Id
-          description: Unique identifier for the assignment requirement record.
-        assignment_title:
+          description: Unique identifier for the assignment requirement being graded.
+        source_type:
           type: string
-          title: Assignment Title
-          description: Stored title for the assignment.
-        assignment_description:
+          enum:
+          - github_pr
+          - local_folder
+          - zip_upload
+          title: Source Type
+          description: Submission source type used to collect project evidence.
+        repo_url:
           anyOf:
           - type: string
           - type: 'null'
-          title: Assignment Description
-          description: Stored assignment description shown in the assignments workspace.
-        due_at:
+          title: Repo Url
+          description: Repository or pull request URL when the source type is github_pr.
+        local_path:
           anyOf:
           - type: string
           - type: 'null'
-          title: Due At
-          description: Stored due date for the assignment requirement, when available.
-        required_deliverables:
-          items:
-            type: string
-          type: array
-          title: Required Deliverables
-          description: Stored deliverables associated with the assignment requirement.
+          title: Local Path
+          description: Local folder path when the source type is local_folder.
+        zip_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Zip Path
+          description: Zip archive path when the source type is zip_upload.
+        reasoning_level:
+          type: string
+          enum:
+          - low
+          - medium
+          - high
+          title: Reasoning Level
+          description: Requested reasoning depth for assignment-requirement grading.
+          default: medium
         requirements:
           items:
-            $ref: '#/components/schemas/ExtractedAssignmentRequirement'
+            $ref: '#/components/schemas/AssignmentRequirementGradingCriterion'
           type: array
+          minItems: 1
           title: Requirements
-          description: Stored requirements currently persisted for this assignment.
+          description: Assignment requirements that must be scored against the project
+            evidence.
       type: object
       required:
+      - student_id
+      - session_id
       - assignment_requirement_id
-      - assignment_title
-      title: StoredAssignmentRequirementResult
-      description: Stored requirements for one assignment row in the session.
-    SessionAssignmentRequirementsResponse:
+      - source_type
+      - requirements
+      title: GradeAssignmentRequirementsRequest
+      description: Public request payload for project assignment-requirement grading.
+    GradeAssignmentRequirementsResponse:
       properties:
+        student_id:
+          type: string
+          title: Student Id
+          description: Unique identifier for the student.
+        student_code:
+          type: string
+          title: Student Code
+          description: Stable course-visible identifier for the student.
+        student_full_name:
+          type: string
+          title: Student Full Name
+          description: Full name of the student.
         session_id:
           type: string
           title: Session Id
           description: Unique identifier for the session.
-        assignment_requirements:
-          items:
-            $ref: '#/components/schemas/StoredAssignmentRequirementResult'
-          type: array
-          title: Assignment Requirements
-          description: Stored assignment requirements currently persisted for the session.
-      type: object
-      required:
-      - session_id
-      title: SessionAssignmentRequirementsResponse
-      description: Public response payload for stored session assignment requirements.
-    UpdateSessionAssignmentRequirementsRequest:
-      properties:
-        assignment_requirements:
-          items:
-            $ref: '#/components/schemas/StoredAssignmentRequirementResult'
-          type: array
-          title: Assignment Requirements
-          description: Stored assignment requirements that should replace the session
-            document.
-      type: object
-      title: UpdateSessionAssignmentRequirementsRequest
-      description: Public request payload for replacing stored assignment requirements.
-    ConceptGradingCriterion:
-      properties:
-        concept_name:
+        assignment_requirement_id:
           type: string
-          title: Concept Name
-          description: Concept label that must be graded.
-        summary:
+          title: Assignment Requirement Id
+          description: Unique identifier for the assignment requirement being graded.
+        assignment_title:
           type: string
-          title: Summary
-          description: Short explanation of what the concept covers.
-        grading_reason:
-          type: string
-          title: Grading Reason
-          description: Why this concept matters for grading.
-        max_score:
-          type: integer
-          minimum: 1.0
-          title: Max Score
-          description: Maximum number of points available for this concept.
-      type: object
-      required:
-      - concept_name
-      - summary
-      - grading_reason
-      - max_score
-      title: ConceptGradingCriterion
-      description: One requested concept and its grading weight for project scoring.
-    ConceptScoreResult:
-      properties:
-        concept:
-          type: string
-          title: Concept
-          description: Concept label that was graded.
-        score:
-          type: integer
-          minimum: 0.0
-          title: Score
-          description: Awarded score for the concept.
-        max_score:
-          type: integer
-          minimum: 1.0
-          title: Max Score
-          description: Maximum number of points available for the concept.
-        coverage_level:
+          title: Assignment Title
+          description: Stored title for the assignment requirement being graded.
+        source_type:
           type: string
           enum:
-          - missing
-          - weak
-          - partial
-          - strong
-          title: Coverage Level
-          description: Strength of concept coverage observed in the project evidence.
-        evidence:
+          - github_pr
+          - local_folder
+          - zip_upload
+          title: Source Type
+          description: Submission source type.
+        repo_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Repo Url
+          description: Repository or pull request URL when the source type is github_pr.
+        local_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Local Path
+          description: Local folder path when the source type is local_folder.
+        zip_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Zip Path
+          description: Zip archive path when the source type is zip_upload.
+        assignment_requirement_scores:
           items:
-            type: string
+            $ref: '#/components/schemas/AssignmentRequirementScoreResult'
           type: array
           minItems: 1
-          title: Evidence
-          description: Concrete project evidence supporting the awarded score.
-        deductions:
+          title: Assignment Requirement Scores
+          description: Evidence-backed scores for each requested assignment requirement.
+        warnings:
           items:
-            type: string
+            $ref: '#/components/schemas/ApiWarning'
           type: array
-          title: Deductions
-          description: Reasons points were not awarded in full.
+          title: Warnings
+          description: Warnings describing any fallback behavior during grading.
       type: object
       required:
-      - concept
-      - score
-      - max_score
-      - coverage_level
-      - evidence
-      title: ConceptScoreResult
-      description: One evidence-backed score awarded to a requested grading concept.
-    GradeableConcept:
-      properties:
-        name:
-          type: string
-          title: Name
-          description: Short concept label.
-        summary:
-          type: string
-          title: Summary
-          description: Brief explanation of the concept.
-        grading_reason:
-          type: string
-          title: Grading Reason
-          description: Why this concept is relevant for grading.
-        concept_importance:
-          type: integer
-          maximum: 10.0
-          minimum: 1.0
-          title: Concept Importance
-          description: Importance score from 1 to 10 based on how central the concept
-            is to the session.
-        evidence:
-          items:
-            type: string
-          type: array
-          minItems: 1
-          title: Evidence
-          description: Session evidence used to justify the concept.
-      type: object
-      required:
-      - name
-      - summary
-      - grading_reason
-      - concept_importance
-      - evidence
-      title: GradeableConcept
-      description: Public response model for one extracted gradeable concept.
+      - student_id
+      - student_code
+      - student_full_name
+      - session_id
+      - assignment_requirement_id
+      - assignment_title
+      - source_type
+      - assignment_requirement_scores
+      title: GradeAssignmentRequirementsResponse
+      description: Public response payload for scored project assignment requirements.
     GradeConceptsRequest:
       properties:
         student_id:
@@ -1038,6 +1286,43 @@ components:
       - concept_scores
       title: GradeConceptsResponse
       description: Public response payload for scored project concepts.
+    GradeableConcept:
+      properties:
+        name:
+          type: string
+          title: Name
+          description: Short concept label.
+        summary:
+          type: string
+          title: Summary
+          description: Brief explanation of the concept.
+        grading_reason:
+          type: string
+          title: Grading Reason
+          description: Why this concept is relevant for grading.
+        concept_importance:
+          type: integer
+          maximum: 10.0
+          minimum: 1.0
+          title: Concept Importance
+          description: Importance score from 1 to 10 based on how central the concept
+            is to the session.
+        evidence:
+          items:
+            type: string
+          type: array
+          minItems: 1
+          title: Evidence
+          description: Session evidence used to justify the concept.
+      type: object
+      required:
+      - name
+      - summary
+      - grading_reason
+      - concept_importance
+      - evidence
+      title: GradeableConcept
+      description: Public response model for one extracted gradeable concept.
     HTTPValidationError:
       properties:
         detail:
@@ -1047,6 +1332,546 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    OrchestratorGradingPolicy:
+      properties:
+        default_assignment_requirement_max_score:
+          type: integer
+          minimum: 1.0
+          title: Default Assignment Requirement Max Score
+          description: Default max score applied to stored assignment requirements.
+          default: 50
+      type: object
+      title: OrchestratorGradingPolicy
+      description: Stable grading-policy defaults used by orchestrator grading tools.
+    OrchestratorPlannerChecks:
+      properties:
+        inputs_sufficient:
+          type: boolean
+          title: Inputs Sufficient
+          description: Whether the visible inputs are sufficient.
+        allowed_tools_only:
+          type: boolean
+          title: Allowed Tools Only
+          description: Whether only allowlisted tools were used in the proposed response.
+        prerequisites_satisfied_or_planned:
+          type: boolean
+          title: Prerequisites Satisfied Or Planned
+          description: Whether grading prerequisites already exist or are requested
+            earlier.
+        duplicate_actions_avoided:
+          type: boolean
+          title: Duplicate Actions Avoided
+          description: Whether duplicate tool calls were avoided without justification.
+        plan_is_minimal:
+          type: boolean
+          title: Plan Is Minimal
+          description: Whether the returned step or tool selection is minimal.
+      type: object
+      required:
+      - inputs_sufficient
+      - allowed_tools_only
+      - prerequisites_satisfied_or_planned
+      - duplicate_actions_avoided
+      - plan_is_minimal
+      title: OrchestratorPlannerChecks
+      description: Self-check summary returned by the planner on each conversation
+        turn.
+    OrchestratorPlannerContextUpdate:
+      properties:
+        knowledge_state:
+          anyOf:
+          - $ref: '#/components/schemas/OrchestratorPlannerKnowledgeState'
+          - type: 'null'
+          description: Planner-visible knowledge summary after considering prior tool
+            results.
+        next_goal:
+          type: string
+          title: Next Goal
+          description: Short description of the next planner objective.
+      type: object
+      required:
+      - next_goal
+      title: OrchestratorPlannerContextUpdate
+      description: Optional state summary returned by the planner between tool requests.
+    OrchestratorPlannerError:
+      properties:
+        error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Code
+          description: Stable failure code when the planner cannot continue.
+        message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Message
+          description: Human-readable error message for planner failure states.
+        details:
+          anyOf:
+          - $ref: '#/components/schemas/OrchestratorPlannerErrorDetails'
+          - type: 'null'
+          description: Optional structured error metadata for planner failures.
+      type: object
+      title: OrchestratorPlannerError
+      description: Machine-readable planner error returned on failed turns.
+    OrchestratorPlannerErrorDetails:
+      properties:
+        missing_inputs:
+          items:
+            type: string
+          type: array
+          title: Missing Inputs
+          description: Any required inputs that prevented the planner from proceeding.
+        failed_tools:
+          items:
+            type: string
+            enum:
+            - extract_concepts
+            - extract_assignment_requirements
+            - grade_concepts
+            - grade_assignment_requirements
+          type: array
+          title: Failed Tools
+          description: Any coarse workflow tools that failed before fallback was returned.
+        notes:
+          items:
+            type: string
+          type: array
+          title: Notes
+          description: Additional machine-readable error notes for the failed planner
+            turn.
+      type: object
+      title: OrchestratorPlannerErrorDetails
+      description: Closed structured metadata returned for fallback planner errors.
+    OrchestratorPlannerKnowledgeState:
+      properties:
+        concepts_present:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Concepts Present
+          description: Whether a reusable concepts document is currently available.
+        assignment_requirements_present:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Assignment Requirements Present
+          description: Whether reusable assignment requirements are currently available.
+        concept_scores_present:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Concept Scores Present
+          description: Whether stored concept scores are currently available.
+        assignment_requirement_scores_present:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Assignment Requirement Scores Present
+          description: Whether stored assignment-requirement scores are currently
+            available.
+        concept_extraction_completed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Concept Extraction Completed
+          description: Whether concept extraction is complete for the requested run.
+        assignment_requirement_extraction_completed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Assignment Requirement Extraction Completed
+          description: Whether assignment-requirement extraction is complete.
+        concept_grading_completed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Concept Grading Completed
+          description: Whether concept grading is complete for the requested run.
+        assignment_requirement_grading_completed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Assignment Requirement Grading Completed
+          description: Whether assignment-requirement grading is complete.
+        next_goal:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Goal
+          description: Optional short summary of the next planner goal.
+      type: object
+      title: OrchestratorPlannerKnowledgeState
+      description: Optional planner-visible state snapshot returned in a context-update
+        turn.
+    OrchestratorPlannerToolCall:
+      properties:
+        tool_name:
+          type: string
+          enum:
+          - extract_concepts
+          - extract_assignment_requirements
+          - grade_concepts
+          - grade_assignment_requirements
+          title: Tool Name
+          description: Coarse workflow action that the backend should execute.
+      type: object
+      required:
+      - tool_name
+      title: OrchestratorPlannerToolCall
+      description: One coarse-grained tool call requested by the planner.
+    OrchestratorPlannerTurnRecord:
+      properties:
+        turn_number:
+          type: integer
+          title: Turn Number
+          description: 1-based planner turn number.
+        response_type:
+          type: string
+          enum:
+          - TOOL_REQUEST
+          - CONTEXT_UPDATE
+          - FINAL_REVIEW
+          - FALLBACK
+          title: Response Type
+          description: Planner response type returned for the turn.
+        reasoning_type:
+          type: string
+          enum:
+          - input_validation
+          - artifact_reuse
+          - prerequisite_planning
+          - grading_plan
+          - composite_grading_plan
+          - state_update
+          - failure_handling
+          title: Reasoning Type
+          description: Reasoning category selected by the planner.
+        reasoning_summary:
+          type: string
+          title: Reasoning Summary
+          description: Visible explanation of the planner's decision for the turn.
+        checks:
+          $ref: '#/components/schemas/OrchestratorPlannerChecks'
+          description: Planner self-check results.
+        tool_calls:
+          items:
+            $ref: '#/components/schemas/OrchestratorPlannerToolCall'
+          type: array
+          title: Tool Calls
+          description: Tool calls requested on the planner turn.
+        context_update:
+          anyOf:
+          - $ref: '#/components/schemas/OrchestratorPlannerContextUpdate'
+          - type: 'null'
+          description: Optional state-update summary returned by the planner.
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
+          description: Planner warnings captured on the turn.
+        error:
+          $ref: '#/components/schemas/OrchestratorPlannerError'
+          description: Structured planner failure details for the turn.
+      type: object
+      required:
+      - turn_number
+      - response_type
+      - reasoning_type
+      - reasoning_summary
+      - checks
+      title: OrchestratorPlannerTurnRecord
+      description: Persisted planner-turn summary returned in the public orchestrator
+        response.
+    OrchestratorToolExecutionResult:
+      properties:
+        tool_name:
+          type: string
+          enum:
+          - extract_concepts
+          - extract_assignment_requirements
+          - grade_concepts
+          - grade_assignment_requirements
+          title: Tool Name
+          description: Coarse workflow action executed by the backend.
+        status:
+          type: string
+          enum:
+          - success
+          - failed
+          title: Status
+          description: Outcome for the executed tool call.
+        output_summary:
+          type: string
+          title: Output Summary
+          description: Short machine-visible summary of the tool result.
+        error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Code
+          description: Stable failure code when the tool execution failed.
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+          description: Human-readable tool execution error message when applicable.
+      type: object
+      required:
+      - tool_name
+      - status
+      - output_summary
+      title: OrchestratorToolExecutionResult
+      description: Public summary of one tool execution performed by the orchestrator.
+    ReviewOrchestratorExecutionResult:
+      properties:
+        extract_concepts_response:
+          anyOf:
+          - $ref: '#/components/schemas/ExtractConceptsResponse'
+          - type: 'null'
+          description: Embedded exact response from the concept extraction workflow.
+        extract_assignment_requirements_response:
+          anyOf:
+          - $ref: '#/components/schemas/ExtractAssignmentRequirementsResponse'
+          - type: 'null'
+          description: Embedded exact response from the assignment-requirement extraction
+            workflow.
+        grade_concepts_response:
+          anyOf:
+          - $ref: '#/components/schemas/GradeConceptsResponse'
+          - type: 'null'
+          description: Embedded exact response from the concept grading workflow.
+        grade_assignment_requirements_response:
+          anyOf:
+          - $ref: '#/components/schemas/GradeAssignmentRequirementsResponse'
+          - type: 'null'
+          description: Embedded exact response from the assignment-requirement grading
+            workflow.
+      type: object
+      title: ReviewOrchestratorExecutionResult
+      description: Aggregated exact workflow responses returned by the orchestrator.
+    RunReviewOrchestratorRequest:
+      properties:
+        operation:
+          type: string
+          enum:
+          - synthesize_concepts
+          - synthesize_assignment_requirements
+          - grade_concepts
+          - grade_assignment_requirements
+          - grade_rubrics
+          - grade_all
+          title: Operation
+          description: Requested top-level workflow that the orchestrator should satisfy.
+        session_id:
+          type: string
+          title: Session Id
+          description: Unique identifier for the related session.
+        student_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Student Id
+          description: Unique identifier for the student when grading work is requested.
+        assignment_requirement_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Assignment Requirement Id
+          description: Unique identifier for the assignment requirement when requirement
+            grading or grade_all is requested.
+        source_type:
+          anyOf:
+          - type: string
+            enum:
+            - github_pr
+            - local_folder
+            - zip_upload
+          - type: 'null'
+          title: Source Type
+          description: Submission source type used for grading operations.
+        repo_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Repo Url
+          description: Repository or pull request URL when the source type is github_pr.
+        local_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Local Path
+          description: Local folder path when the source type is local_folder.
+        zip_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Zip Path
+          description: Zip archive path when the source type is zip_upload.
+        reasoning_level:
+          type: string
+          enum:
+          - low
+          - medium
+          - high
+          title: Reasoning Level
+          description: Requested reasoning depth for planner and workflow calls.
+          default: medium
+        refresh_policy:
+          type: string
+          enum:
+          - reuse_or_missing
+          - force_refresh
+          title: Refresh Policy
+          description: Whether stored artifacts may be reused or must be regenerated.
+          default: reuse_or_missing
+        grading_policy:
+          $ref: '#/components/schemas/OrchestratorGradingPolicy'
+          description: Default score-policy inputs used by orchestrator grading tools.
+        max_turns:
+          type: integer
+          maximum: 8.0
+          minimum: 1.0
+          title: Max Turns
+          description: Maximum planner turns allowed before the orchestrator fails
+            closed.
+          default: 6
+      type: object
+      required:
+      - operation
+      - session_id
+      title: RunReviewOrchestratorRequest
+      description: Public request payload for the ReviewPilot conversation-loop orchestrator.
+    RunReviewOrchestratorResponse:
+      properties:
+        trace_id:
+          type: string
+          title: Trace Id
+          description: Trace identifier for correlating orchestrator events.
+        requested_operation:
+          type: string
+          enum:
+          - synthesize_concepts
+          - synthesize_assignment_requirements
+          - grade_concepts
+          - grade_assignment_requirements
+          - grade_rubrics
+          - grade_all
+          title: Requested Operation
+          description: Requested top-level workflow that the orchestrator attempted.
+        status:
+          type: string
+          enum:
+          - success
+          - failed
+          - partial
+          title: Status
+          description: Terminal orchestrator run status.
+        reasoning_type:
+          type: string
+          enum:
+          - input_validation
+          - artifact_reuse
+          - prerequisite_planning
+          - grading_plan
+          - composite_grading_plan
+          - state_update
+          - failure_handling
+          title: Reasoning Type
+          description: Reasoning category used on the terminal planner turn.
+        reasoning_summary:
+          type: string
+          title: Reasoning Summary
+          description: Visible explanation from the terminal planner turn.
+        planner_turns:
+          items:
+            $ref: '#/components/schemas/OrchestratorPlannerTurnRecord'
+          type: array
+          title: Planner Turns
+          description: Planner turn history captured during the conversation loop.
+        tool_results:
+          items:
+            $ref: '#/components/schemas/OrchestratorToolExecutionResult'
+          type: array
+          title: Tool Results
+          description: Executed coarse tool results in the order they were run.
+        result:
+          $ref: '#/components/schemas/ReviewOrchestratorExecutionResult'
+          description: Aggregated exact workflow responses produced or reused by the
+            run.
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
+          description: Orchestrator-level warnings collected across planner turns.
+        error:
+          $ref: '#/components/schemas/OrchestratorPlannerError'
+          description: Structured terminal failure details when the run does not succeed.
+      type: object
+      required:
+      - trace_id
+      - requested_operation
+      - status
+      - reasoning_type
+      - reasoning_summary
+      title: RunReviewOrchestratorResponse
+      description: Public response payload for a completed orchestrator run.
+    SessionAssignmentRequirementsResponse:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+          description: Unique identifier for the session.
+        assignment_requirements:
+          items:
+            $ref: '#/components/schemas/StoredAssignmentRequirementResult'
+          type: array
+          title: Assignment Requirements
+          description: Stored assignment requirements currently persisted for the
+            session.
+      type: object
+      required:
+      - session_id
+      title: SessionAssignmentRequirementsResponse
+      description: Public response payload for stored session assignment requirements.
+    SessionAssignmentsResponse:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+          description: Unique identifier for the session.
+        assignments:
+          items:
+            $ref: '#/components/schemas/StoredSessionAssignment'
+          type: array
+          title: Assignments
+          description: Stored assignments currently persisted for the session.
+      type: object
+      required:
+      - session_id
+      title: SessionAssignmentsResponse
+      description: Public response payload for stored session assignment metadata.
+    SessionConceptsResponse:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+          description: Unique identifier for the session.
+        concepts:
+          items:
+            $ref: '#/components/schemas/GradeableConcept'
+          type: array
+          title: Concepts
+          description: Stored gradeable concepts currently persisted for the session.
+      type: object
+      required:
+      - session_id
+      title: SessionConceptsResponse
+      description: Public response payload for the stored session concepts document.
     SessionSubmission:
       properties:
         submission_id:
@@ -1122,6 +1947,8 @@ components:
           enum:
           - submitted
           - under_review
+          - concepts_graded
+          - assignment_requirements_graded
           - reviewed
           - needs_resubmission
           title: Status
@@ -1142,7 +1969,8 @@ components:
             type: object
           type: array
           title: Assignment Requirement Scores
-          description: Persisted assignment-requirement scores currently stored for the submission.
+          description: Persisted assignment-requirement scores currently stored for
+            the submission.
         rubric_scores:
           items:
             additionalProperties: true
@@ -1184,6 +2012,61 @@ components:
       - session_topic
       title: SessionSummary
       description: Public response model for a session summary.
+    StoredAssignmentRequirementResult:
+      properties:
+        assignment_requirement_id:
+          type: string
+          title: Assignment Requirement Id
+          description: Unique identifier for the assignment requirement record.
+        assignment_title:
+          type: string
+          title: Assignment Title
+          description: Stored title for the assignment.
+        requirements:
+          items:
+            $ref: '#/components/schemas/ExtractedAssignmentRequirement'
+          type: array
+          title: Requirements
+          description: Stored requirements currently persisted for this assignment.
+      type: object
+      required:
+      - assignment_requirement_id
+      - assignment_title
+      title: StoredAssignmentRequirementResult
+      description: Stored requirements for one assignment row in the session.
+    StoredSessionAssignment:
+      properties:
+        assignment_requirement_id:
+          type: string
+          title: Assignment Requirement Id
+          description: Unique identifier for the assignment requirement record.
+        assignment_title:
+          type: string
+          title: Assignment Title
+          description: Stored title for the assignment.
+        assignment_description:
+          type: string
+          title: Assignment Description
+          description: Stored assignment description shown in the assignments workspace.
+        due_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Due At
+          description: Stored due date for the assignment, when available.
+        required_deliverables:
+          items:
+            type: string
+          type: array
+          title: Required Deliverables
+          description: Stored deliverables associated with the assignment.
+      type: object
+      required:
+      - assignment_requirement_id
+      - assignment_title
+      - assignment_description
+      title: StoredSessionAssignment
+      description: Stored assignment metadata for one assignment row in the session.
     StudentSubmission:
       properties:
         submission_id:
@@ -1271,6 +2154,8 @@ components:
           enum:
           - submitted
           - under_review
+          - concepts_graded
+          - assignment_requirements_graded
           - reviewed
           - needs_resubmission
           title: Status
@@ -1296,6 +2181,30 @@ components:
       title: StudentSubmission
       description: Public response model for an assignment submission for a single
         student.
+    UpdateSessionAssignmentRequirementsRequest:
+      properties:
+        assignment_requirements:
+          items:
+            $ref: '#/components/schemas/StoredAssignmentRequirementResult'
+          type: array
+          title: Assignment Requirements
+          description: Stored assignment requirements that should replace the session
+            document.
+      type: object
+      title: UpdateSessionAssignmentRequirementsRequest
+      description: Public request payload for replacing stored assignment requirements.
+    UpdateSessionConceptsRequest:
+      properties:
+        concepts:
+          items:
+            $ref: '#/components/schemas/GradeableConcept'
+          type: array
+          title: Concepts
+          description: Stored gradeable concepts that should replace the session document.
+      type: object
+      title: UpdateSessionConceptsRequest
+      description: Public request payload for replacing the stored session concepts
+        document.
     ValidationError:
       properties:
         loc:

@@ -16,7 +16,7 @@ Prefer vertical slices that produce a working end-to-end path over broad framewo
 ## Code style
 
 - Keep code simple and readable.
-- Keep classes small. Do not create large, multi-purpose classes.
+- Keep classes small. Do not create large, multi-purpose classes. Max allowed lines 250 per class; rare exceptions allowed.
 - Prefer small functions with explicit inputs and outputs.
 - Prefer composition over growing one class with many responsibilities.
 - Prefer straightforward control flow over clever abstractions.

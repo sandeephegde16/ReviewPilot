@@ -847,6 +847,18 @@ a {
   color: #89d0a8;
 }
 
+.status-pill.status-concepts_graded {
+  border-color: rgba(93, 162, 255, 0.36);
+  background: rgba(93, 162, 255, 0.12);
+  color: #8ac2ff;
+}
+
+.status-pill.status-assignment_requirements_graded {
+  border-color: rgba(255, 124, 109, 0.36);
+  background: rgba(255, 124, 109, 0.12);
+  color: #ffaea3;
+}
+
 .status-pill.status-submitted {
   border-color: rgba(202, 155, 71, 0.36);
   background: rgba(202, 155, 71, 0.12);
@@ -971,6 +983,18 @@ a {
   color: #63d08d;
 }
 
+.submission-status-mark.status-concepts_graded {
+  border-color: rgba(93, 162, 255, 0.28);
+  background: rgba(93, 162, 255, 0.1);
+  color: #8ac2ff;
+}
+
+.submission-status-mark.status-assignment_requirements_graded {
+  border-color: rgba(255, 124, 109, 0.28);
+  background: rgba(255, 124, 109, 0.1);
+  color: #ffaea3;
+}
+
 .submission-status-mark.status-submitted {
   border-color: rgba(202, 155, 71, 0.28);
   background: rgba(202, 155, 71, 0.1);
@@ -1053,6 +1077,20 @@ a {
 .submission-grade-button:disabled {
   color: #7b808c;
   cursor: not-allowed;
+}
+
+.submission-grade-button.is-loading,
+.submission-grade-button.is-loading:disabled {
+  border-color: rgba(93, 162, 255, 0.34);
+  background: rgba(93, 162, 255, 0.14);
+  color: #8cc0ff;
+}
+
+.submission-grade-button.is-blocked:disabled {
+  border-color: #242830;
+  background: #13151a;
+  color: #666b78;
+  opacity: 0.72;
 }
 
 .submission-grade-button.is-success {
@@ -1275,6 +1313,40 @@ a {
 .assignment-modal-meta {
   margin-top: 18px;
   justify-content: flex-start;
+}
+
+.submission-detail-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 18px;
+}
+
+.submission-detail-toolbar-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.submission-detail-action-stack {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.submission-detail-action-stack .submission-grade-button {
+  min-height: 32px;
+  padding: 0 12px;
+}
+
+.submission-detail-action-stack .submission-action-feedback {
+  max-width: 180px;
 }
 
 .assignment-modal-body {
@@ -1974,6 +2046,18 @@ a {
 
   .submission-score-overview {
     grid-template-columns: 1fr;
+  }
+
+  .submission-detail-toolbar {
+    justify-content: flex-start;
+  }
+
+  .submission-detail-toolbar-actions {
+    justify-content: flex-start;
+  }
+
+  .submission-detail-action-stack {
+    align-items: flex-start;
   }
 }
 
